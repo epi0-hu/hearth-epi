@@ -10,6 +10,8 @@ class Macros(
     private val vars: Map<String, String>,
     private val random: Random = Random.Default,
     private val now: () -> Date = { Date() },
+    /** Variables for {{setvar}} / {{getvar}}; shared across every expand() on this instance. */
+    val variables: MutableMap<String, String> = HashMap(),
 ) {
     fun expand(text: String): String {
         if (text.isEmpty()) return text
@@ -36,6 +38,7 @@ class Macros(
         val body = bodyRaw.trim()
         val lower = body.lowercase(Locale.ROOT)
         vars[lower]?.let { return it }
+        variableMacro(body, lower)?.let { return it }
         return when {
             lower == "newline" -> "\n"
             lower == "noop" -> ""
@@ -57,6 +60,30 @@ class Macros(
             else -> null
         }
     }
+
+    private fun variableMacro(body: String, lower: String): String? {
+        val cmd = lower.substringBefore("::")
+        if (cmd == lower && !lower.contains("::")) return null
+        val args = body.split("::").drop(1)
+        val name = args.getOrNull(0)?.trim() ?: return null
+        val value = args.drop(1).joinToString("::")
+        return when (cmd) {
+            "setvar", "setglobalvar" -> { variables[name] = value; "" }
+            "getvar", "getglobalvar" -> variables[name] ?: ""
+            "addvar", "addglobalvar" -> {
+                val cur = variables[name] ?: ""
+                val a = cur.toDoubleOrNull()
+                val b = value.toDoubleOrNull()
+                variables[name] = if (a != null && b != null) fmtNum(a + b) else cur + value
+                ""
+            }
+            "incvar", "incglobalvar" -> fmtNum((variables[name]?.toDoubleOrNull() ?: 0.0) + 1).also { variables[name] = it }
+            "decvar", "decglobalvar" -> fmtNum((variables[name]?.toDoubleOrNull() ?: 0.0) - 1).also { variables[name] = it }
+            else -> null
+        }
+    }
+
+    private fun fmtNum(d: Double) = if (d == Math.rint(d)) d.toLong().toString() else d.toString()
 
     private fun roll(spec: String): String? {
         val m = DICE.matchEntire(spec) ?: return null

@@ -17,6 +17,9 @@ import androidx.compose.ui.Modifier
 import app.hearth.ui.CharacterEditScreen
 import app.hearth.ui.CharacterListScreen
 import app.hearth.ui.ChatScreen
+import app.hearth.ui.GroupEditScreen
+import app.hearth.ui.RegexEditScreen
+import app.hearth.ui.RegexListScreen
 import app.hearth.ui.HearthTheme
 import app.hearth.ui.LorebookEditScreen
 import app.hearth.ui.LorebookListScreen
@@ -54,6 +57,9 @@ private fun AppRoot(vm: MainViewModel) {
             Screen.Characters -> CharacterListScreen(vm)
             is Screen.Chat -> ChatScreen(vm)
             is Screen.EditCharacter -> CharacterEditScreen(vm, screen.charId)
+            is Screen.EditGroup -> GroupEditScreen(vm, screen.groupId)
+            Screen.Regex -> RegexListScreen(vm)
+            is Screen.EditRegex -> RegexEditScreen(vm, screen.id)
             Screen.Settings -> SettingsScreen(vm)
             Screen.Lorebooks -> LorebookListScreen(vm)
             is Screen.EditLorebook -> LorebookEditScreen(vm, screen.id)

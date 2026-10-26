@@ -102,6 +102,8 @@ object Cards {
             book = book,
             linkedWorld = ext.str("world"),
             depthPrompt = depth,
+            talkativeness = ext.num("talkativeness", 0.5).toFloat().coerceIn(0f, 1f),
+            regex = ext.objList("regex_scripts").map { RegexScript.fromJson(it) },
             raw = card,
         )
     }

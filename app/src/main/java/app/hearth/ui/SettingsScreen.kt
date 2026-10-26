@@ -57,7 +57,7 @@ import app.hearth.core.Preset
 import kotlinx.coroutines.launch
 import java.util.Locale
 
-private val TABS = listOf("Connection", "Preset", "Prompts", "Persona & Lore", "Display")
+private val TABS = listOf("Connection", "Preset", "Prompts", "Persona & Lore", "Display", "Data")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,7 +87,8 @@ fun SettingsScreen(vm: MainViewModel) {
                 1 -> PresetTab(vm, s)
                 2 -> PromptsTab(vm, s.preset)
                 3 -> PersonaTab(vm, s)
-                else -> DisplayTab(vm, s)
+                4 -> DisplayTab(vm, s)
+                else -> DataTab(vm)
             }
             Spacer(Modifier.height(40.dp))
         }
@@ -275,22 +276,24 @@ private fun PresetTab(vm: MainViewModel, s: AppSettings) {
 
 @Composable
 private fun PromptsTab(vm: MainViewModel, p: Preset) {
-    SectionTitle("Prompts for preset \"${p.name}\"")
-    PromptField("Main prompt", p.mainPrompt, "Top of the prompt. Macros like {{char}} and {{user}} work everywhere.") { v ->
-        vm.updatePreset { it.copy(mainPrompt = v) }
-    }
-    PromptField("Post-history instructions", p.postHistory, "Sent after the chat history (a.k.a. jailbreak).") { v ->
-        vm.updatePreset { it.copy(postHistory = v) }
-    }
+    PromptModulesEditor(vm, p)
+    SectionTitle("Other prompts")
     PromptField("Assistant prefill", p.prefill, "Claude / text completion: the reply starts with this text.") { v ->
         vm.updatePreset { it.copy(prefill = v) }
     }
     PromptField("New chat marker", p.newChatPrompt, null) { v -> vm.updatePreset { it.copy(newChatPrompt = v) } }
     PromptField("Continue nudge", p.continueNudge, null) { v -> vm.updatePreset { it.copy(continueNudge = v) } }
     PromptField("Impersonation prompt", p.impersonatePrompt, null) { v -> vm.updatePreset { it.copy(impersonatePrompt = v) } }
+    PromptField("Group nudge", p.groupNudge, "Sent last in group chats so the model answers as the right character.") { v ->
+        vm.updatePreset { it.copy(groupNudge = v) }
+    }
     SwitchRow(
         "Prefer character prompts", p.preferCharPrompt, { v -> vm.updatePreset { it.copy(preferCharPrompt = v) } },
         hint = "Use a card's own system prompt / post-history instructions when it has them.",
+    )
+    SwitchRow(
+        "Squash system messages", p.squashSystem, { v -> vm.updatePreset { it.copy(squashSystem = v) } },
+        hint = "Merge consecutive system messages into one (helps some models).",
     )
 }
 
@@ -335,6 +338,15 @@ private fun DisplayTab(vm: MainViewModel, s: AppSettings) {
     SliderRow("Text size", s.fontScale, 0.8f..1.4f, { "${(it * 100).toInt()}%" },
         { v -> vm.updateSettings { it.copy(fontScale = v) } }, step = 0.05f)
     SwitchRow("Show avatars in chat", s.showAvatars, { v -> vm.updateSettings { it.copy(showAvatars = v) } })
+    SectionTitle("HTML")
+    SwitchRow("Render HTML in messages", s.renderHtml, { v -> vm.updateSettings { it.copy(renderHtml = v) } },
+        hint = "Status panels, styled boxes, <details>, tables and images. Plain messages stay on the fast renderer.")
+    SwitchRow("Allow scripts in HTML", s.allowHtmlScripts, { v -> vm.updateSettings { it.copy(allowHtmlScripts = v) } },
+        hint = "Off by default. Only turn on for cards and regex scripts you trust.")
+    SectionTitle("Regex")
+    SwitchRow("Run character regex scripts", s.characterRegex, { v -> vm.updateSettings { it.copy(characterRegex = v) } },
+        hint = "Scripts embedded in character cards.")
+    OutlinedButton(onClick = { vm.navigate(app.hearth.Screen.Regex) }) { Text("Manage regex scripts (${s.regex.size})") }
     SectionTitle("Advanced")
     SliderRow("Characters per token (estimate)", s.tokenRatio.toFloat(), 2f..5f, ::fmt2,
         { v -> vm.updateSettings { it.copy(tokenRatio = v.toDouble()) } }, step = 0.05f)
@@ -342,6 +354,54 @@ private fun DisplayTab(vm: MainViewModel, s: AppSettings) {
         "Used to fit the prompt into the context window without a tokenizer. Lower it if you hit context-length errors.",
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+}
+
+@Composable
+private fun DataTab(vm: MainViewModel) {
+    var includeKeys by remember { mutableStateOf(false) }
+    var confirmRestore by remember { mutableStateOf<android.net.Uri?>(null) }
+    val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) vm.exportBackup(uri, includeKeys)
+    }
+    val restorer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) confirmRestore = uri
+    }
+    val busy = vm.busy
+
+    SectionTitle("Backup")
+    Text(
+        "Saves characters, chats, groups, lorebooks, presets, regex and settings into one zip.",
+        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    SwitchRow("Include API keys", includeKeys, { includeKeys = it }, hint = "Leave off if you'll share the file.")
+    Button(enabled = busy == null, onClick = {
+        exporter.launch("hearth-backup-" + java.text.SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(java.util.Date()) + ".zip")
+    }) { Text("Create backup") }
+
+    SectionTitle("Restore / import")
+    Text(
+        "Pick a Hearth backup to restore it, or a zip of your SillyTavern data folder " +
+            "(data/default-user) to import characters, chats, group chats, lorebooks, presets and regex.",
+        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(8.dp))
+    OutlinedButton(enabled = busy == null, onClick = {
+        restorer.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+    }) { Text("Choose zip…") }
+    if (busy != null) {
+        Text(busy, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(top = 12.dp))
+    }
+
+    confirmRestore?.let { uri ->
+        ConfirmDialog(
+            "Import this zip?",
+            "A Hearth backup replaces files with the same names (your current chats are kept otherwise). " +
+                "A SillyTavern folder is added alongside what you already have.",
+            confirm = "Import",
+            onDismiss = { confirmRestore = null },
+        ) { vm.restoreBackup(uri) }
+    }
 }
 
 private fun fmt2(v: Float) = String.format(Locale.US, "%.2f", v)

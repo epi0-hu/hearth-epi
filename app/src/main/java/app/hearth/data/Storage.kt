@@ -10,6 +10,7 @@ import app.hearth.core.CharacterSummary
 import app.hearth.core.ChatInfo
 import app.hearth.core.ChatStore
 import app.hearth.core.Json
+import app.hearth.core.Group
 import app.hearth.core.Lorebook
 import app.hearth.core.bool
 import app.hearth.core.jsonOf
@@ -25,11 +26,12 @@ import java.io.File
  *   thumbs/<id>.webp      small list avatar    chats/<id>/<name>.jsonl  ST-format chats
  *   lorebooks/<id>.json   ST world-info files  settings.json
  */
-class Storage(root: File) {
+class Storage(val root: File) {
     val charDir = File(root, "characters").apply { mkdirs() }
     private val thumbDir = File(root, "thumbs").apply { mkdirs() }
     private val chatRoot = File(root, "chats").apply { mkdirs() }
     private val loreDir = File(root, "lorebooks").apply { mkdirs() }
+    private val groupDir = File(root, "groups").apply { mkdirs() }
     private val settingsFile = File(root, "settings.json")
     private val indexFile = File(charDir, "_index.json")
 
@@ -105,6 +107,18 @@ class Storage(root: File) {
         File(chatRoot, id).deleteRecursively()
     }
 
+    /** Imports a PNG or JSON card, saving it and its avatar. Returns the stored character. */
+    fun importCard(bytes: ByteArray): Character {
+        val json = if (Cards.isPng(bytes)) Cards.extractJsonFromPng(bytes)
+        else Json.parseObj(bytes.toString(Charsets.UTF_8))
+        val name = Cards.parse("tmp", json).name
+        val id = newCharacterId(name)
+        val ch = Cards.parse(id, json)
+        saveCharacter(ch)
+        if (Cards.isPng(bytes)) saveAvatar(id, bytes)
+        return ch
+    }
+
     /** Stores the avatar as PNG (converting other formats) and writes a small WebP thumbnail. */
     fun saveAvatar(id: String, bytes: ByteArray) {
         val png = if (Cards.isPng(bytes)) bytes else {
@@ -173,6 +187,35 @@ class Storage(root: File) {
         var n = 2
         while (loreFile(id).exists()) id = "${base}_${n++}"
         return id
+    }
+
+    // ------------------------------------------------------------ groups
+    private fun groupFile(id: String) = File(groupDir, "$id.json")
+
+    fun loadGroups(): List<Group> =
+        groupDir.listFiles { f -> f.name.endsWith(".json") }.orEmpty().mapNotNull { f ->
+            runCatching { Group.fromJson(Json.parseObj(f.readText())) }.getOrNull()?.takeIf { it.id.isNotEmpty() }
+        }
+
+    fun saveGroup(g: Group) = atomicWrite(groupFile(g.id), Json.stringify(g.toJson()))
+
+    fun deleteGroup(id: String) {
+        groupFile(id).delete()
+        File(chatRoot, Group.chatKeyFor(id)).deleteRecursively()
+    }
+
+    fun newGroupId(name: String): String {
+        val base = name.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(40).ifEmpty { "group" }
+        var id = base
+        var n = 2
+        while (groupFile(id).exists()) id = "${base}_${n++}"
+        return id
+    }
+
+    /** Copies a whole chat file into the store under [key]. */
+    fun importChat(key: String, name: String, bytes: ByteArray) {
+        val safe = name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        File(chatDir(key), safe).writeBytes(bytes)
     }
 
     private fun atomicWrite(f: File, text: String) {

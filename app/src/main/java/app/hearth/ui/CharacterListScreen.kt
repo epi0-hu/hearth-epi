@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -58,10 +59,13 @@ import app.hearth.MainViewModel
 import app.hearth.Screen
 import app.hearth.core.CharacterSummary
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun CharacterListScreen(vm: MainViewModel) {
     val chars by vm.characters.collectAsStateWithLifecycle()
+    val groups by vm.groups.collectAsStateWithLifecycle()
+    var groupMenu by remember { mutableStateOf<String?>(null) }
+    var confirmGroupDelete by remember { mutableStateOf<app.hearth.core.Group?>(null) }
     val ready by vm.ready.collectAsStateWithLifecycle()
     var searching by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
@@ -140,7 +144,59 @@ fun CharacterListScreen(vm: MainViewModel) {
                             DropdownMenuItem(text = { Text("Create character") }, onClick = {
                                 menu = false; vm.navigate(Screen.EditCharacter(null))
                             })
+                            DropdownMenuItem(text = { Text("Create group chat") }, onClick = {
+                                menu = false; vm.navigate(Screen.EditGroup(null))
+                            })
+                            DropdownMenuItem(text = { Text("Regex scripts") }, onClick = {
+                                menu = false; vm.navigate(Screen.Regex)
+                            })
+                            DropdownMenuItem(text = { Text("Backup & import") }, onClick = {
+                                menu = false; vm.navigate(Screen.Settings)
+                                vm.toast("Backup and SillyTavern import are in the Data tab")
+                            })
                         }
+                    }
+                }
+            }
+            val shownGroups = groups.filter { g -> query.isBlank() || g.name.contains(query.trim(), true) }
+                .sortedWith(compareByDescending<app.hearth.core.Group> { it.favorite }.thenByDescending { it.lastActive })
+            items(shownGroups, key = { "g:" + it.id }, contentType = { "group" }) { g ->
+                val members = remember(g.members, chars) {
+                    g.members.mapNotNull { id -> chars.firstOrNull { it.id == id } }
+                }
+                Box {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .combinedClickable(onClick = { vm.openGroup(g.id) }, onLongClick = { groupMenu = g.id })
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.width(52.dp)) {
+                            members.take(2).forEachIndexed { i, m ->
+                                Avatar(m.id, m.name, vm.storage.thumbFile(m.id), vm.avatarVersion[m.id] ?: 0L, 36.dp,
+                                    Modifier.offset(x = (i * 16).dp, y = (i * 14).dp))
+                            }
+                        }
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(g.name, style = MaterialTheme.typography.titleMedium, maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                                if (g.favorite) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Icon(Icons.Default.Star, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                                }
+                            }
+                            Text("Group · " + members.joinToString(", ") { it.name }, style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    DropdownMenu(groupMenu == g.id, { groupMenu = null }) {
+                        DropdownMenuItem(text = { Text("Edit group") }, onClick = { groupMenu = null; vm.navigate(Screen.EditGroup(g.id)) })
+                        DropdownMenuItem(text = { Text(if (g.favorite) "Unfavorite" else "Favorite") }, onClick = {
+                            groupMenu = null; vm.toggleGroupFavorite(g.id)
+                        })
+                        DropdownMenuItem(text = { Text("Delete") }, onClick = { groupMenu = null; confirmGroupDelete = g })
                     }
                 }
             }
@@ -157,6 +213,12 @@ fun CharacterListScreen(vm: MainViewModel) {
         }
     }
 
+    confirmGroupDelete?.let { g ->
+        ConfirmDialog(
+            "Delete ${g.name}?", "The group and its chats will be deleted. The characters stay.",
+            onDismiss = { confirmGroupDelete = null }, onConfirm = { vm.deleteGroup(g.id) },
+        )
+    }
     confirmDelete?.let { c ->
         ConfirmDialog(
             "Delete ${c.name}?", "This removes the character and all of their chats.",

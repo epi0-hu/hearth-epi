@@ -31,6 +31,8 @@ data class Character(
     val book: Lorebook? = null,
     val linkedWorld: String = "",
     val depthPrompt: DepthPrompt? = null,
+    val talkativeness: Float = 0.5f,
+    val regex: List<RegexScript> = emptyList(),
     val raw: JObj = emptyMap(),
 ) {
     /** Serializes as a chara_card_v2 object, overlaying edited fields onto the raw card. */
@@ -54,6 +56,7 @@ data class Character(
         @Suppress("UNCHECKED_CAST")
         val ext = (data["extensions"] as? MJObj) ?: MJObj()
         ext["world"] = linkedWorld
+        ext["talkativeness"] = talkativeness.toString()
         if (depthPrompt != null && depthPrompt.prompt.isNotBlank()) {
             ext["depth_prompt"] = jsonOf(
                 "prompt" to depthPrompt.prompt, "depth" to depthPrompt.depth,
@@ -415,6 +418,8 @@ const val DEFAULT_IMPERSONATE =
     "[Write your next reply from the point of view of {{user}}, using the chat history so far as a guideline for " +
         "the writing style of {{user}}. Don't write as {{char}} or system. Don't describe actions of {{char}}.]"
 
+const val DEFAULT_GROUP_NUDGE = "[Write the next reply only as {{char}}.]"
+
 data class Preset(
     val name: String,
     val temperature: Double = 1.0,
@@ -427,30 +432,49 @@ data class Preset(
     val maxTokens: Int = 400,
     val contextSize: Int = 16384,
     val streaming: Boolean = true,
-    val mainPrompt: String = DEFAULT_MAIN_PROMPT,
-    val postHistory: String = "",
+    /** Ordered prompt modules (SillyTavern prompt manager). */
+    val modules: List<PromptModule> = PromptModule.defaults(),
     val prefill: String = "",
     val newChatPrompt: String = DEFAULT_NEW_CHAT,
     val continueNudge: String = DEFAULT_CONTINUE_NUDGE,
     val impersonatePrompt: String = DEFAULT_IMPERSONATE,
+    val groupNudge: String = DEFAULT_GROUP_NUDGE,
     val instruct: String = InstructTemplate.CHATML.name,
     val namesInText: Boolean = true,
     val stopStrings: List<String> = emptyList(),
     val preferCharPrompt: Boolean = true,
+    val squashSystem: Boolean = false,
 ) {
+    fun module(id: String) = modules.firstOrNull { it.identifier == id }
+
+    /** Convenience for tests and simple setups: sets the main / post-history module text. */
+    fun withPrompts(main: String? = null, postHistory: String? = null): Preset = copy(
+        modules = modules.map {
+            when {
+                it.identifier == PromptModule.MAIN && main != null -> it.copy(content = main)
+                it.identifier == PromptModule.JAILBREAK && postHistory != null -> it.copy(content = postHistory)
+                else -> it
+            }
+        },
+    )
+
     fun toJson(): MJObj = jsonOf(
         "name" to name, "temperature" to temperature, "topP" to topP, "topK" to topK, "minP" to minP,
         "repetitionPenalty" to repetitionPenalty, "frequencyPenalty" to frequencyPenalty,
         "presencePenalty" to presencePenalty, "maxTokens" to maxTokens, "contextSize" to contextSize,
-        "streaming" to streaming, "mainPrompt" to mainPrompt, "postHistory" to postHistory,
+        "streaming" to streaming, "modules" to modules.map { it.toJson() },
         "prefill" to prefill, "newChatPrompt" to newChatPrompt, "continueNudge" to continueNudge,
-        "impersonatePrompt" to impersonatePrompt, "instruct" to instruct, "namesInText" to namesInText,
-        "stopStrings" to stopStrings, "preferCharPrompt" to preferCharPrompt,
+        "impersonatePrompt" to impersonatePrompt, "groupNudge" to groupNudge, "instruct" to instruct,
+        "namesInText" to namesInText, "stopStrings" to stopStrings, "preferCharPrompt" to preferCharPrompt,
+        "squashSystem" to squashSystem,
     )
 
     companion object {
         fun fromJson(o: JObj): Preset {
             val d = Preset(o.str("name", "Default"))
+            val modules = if (o["modules"] is List<*>) o.objList("modules").map { PromptModule.fromJson(it) }
+            // Migrate presets saved before prompt modules existed.
+            else PromptModule.defaults(o.str("mainPrompt", DEFAULT_MAIN_PROMPT), o.str("postHistory", ""))
             return Preset(
                 name = d.name,
                 temperature = o.num("temperature", d.temperature),
@@ -463,27 +487,27 @@ data class Preset(
                 maxTokens = o.int("maxTokens", d.maxTokens),
                 contextSize = o.int("contextSize", d.contextSize),
                 streaming = o.bool("streaming", d.streaming),
-                mainPrompt = o.str("mainPrompt", d.mainPrompt),
-                postHistory = o.str("postHistory", d.postHistory),
+                modules = modules,
                 prefill = o.str("prefill", d.prefill),
                 newChatPrompt = o.str("newChatPrompt", d.newChatPrompt),
                 continueNudge = o.str("continueNudge", d.continueNudge),
                 impersonatePrompt = o.str("impersonatePrompt", d.impersonatePrompt),
+                groupNudge = o.str("groupNudge", d.groupNudge),
                 instruct = o.str("instruct", d.instruct),
                 namesInText = o.bool("namesInText", d.namesInText),
                 stopStrings = o.strList("stopStrings"),
                 preferCharPrompt = o.bool("preferCharPrompt", d.preferCharPrompt),
+                squashSystem = o.bool("squashSystem", d.squashSystem),
             )
         }
 
         /**
-         * Imports a SillyTavern preset. Handles chat-completion presets
-         * (prompts[] with main/jailbreak) and text-completion sampler presets.
+         * Imports a SillyTavern preset: chat-completion presets (prompts[] + prompt_order,
+         * i.e. modular presets like Sola) and text-completion sampler presets.
          */
         fun fromSillyTavern(name: String, o: JObj): Preset {
             val d = Preset(name)
-            val prompts = o.objList("prompts")
-            fun prompt(id: String) = prompts.firstOrNull { it.str("identifier") == id }?.str("content")
+            val modules = PromptModule.fromSillyTavern(o) ?: d.modules
             return d.copy(
                 temperature = o.num("temperature", o.num("temp", d.temperature)),
                 topP = o.num("top_p", d.topP),
@@ -495,12 +519,13 @@ data class Preset(
                 maxTokens = o.int("openai_max_tokens", o.int("genamt", d.maxTokens)),
                 contextSize = o.int("openai_max_context", o.int("max_length", d.contextSize)),
                 streaming = o.bool("stream_openai", d.streaming),
-                mainPrompt = prompt("main") ?: d.mainPrompt,
-                postHistory = prompt("jailbreak") ?: d.postHistory,
+                modules = modules,
                 prefill = o.str("assistant_prefill", d.prefill),
                 newChatPrompt = o.str("new_chat_prompt", d.newChatPrompt),
                 continueNudge = o.str("continue_nudge_prompt", d.continueNudge),
                 impersonatePrompt = o.str("impersonation_prompt", d.impersonatePrompt),
+                groupNudge = o.str("group_nudge_prompt", d.groupNudge),
+                squashSystem = o.bool("squash_system_messages", d.squashSystem),
             )
         }
     }
@@ -547,6 +572,11 @@ data class AppSettings(
     val fontScale: Float = 1f,
     val showAvatars: Boolean = true,
     val tokenRatio: Double = 3.5,
+    val regex: List<RegexScript> = emptyList(),
+    /** Run regex scripts embedded in character cards. */
+    val characterRegex: Boolean = true,
+    val renderHtml: Boolean = true,
+    val allowHtmlScripts: Boolean = false,
 ) {
     val connection: Connection get() = connections.firstOrNull { it.id == activeConnection } ?: connections.first()
     val preset: Preset get() = presets.firstOrNull { it.name == activePreset } ?: presets.first()
@@ -562,6 +592,10 @@ data class AppSettings(
         "fontScale" to fontScale.toDouble(),
         "showAvatars" to showAvatars,
         "tokenRatio" to tokenRatio,
+        "regex" to regex.map { it.toJson() },
+        "characterRegex" to characterRegex,
+        "renderHtml" to renderHtml,
+        "allowHtmlScripts" to allowHtmlScripts,
     )
 
     companion object {
@@ -580,7 +614,65 @@ data class AppSettings(
                 fontScale = o.num("fontScale", 1.0).toFloat(),
                 showAvatars = o.bool("showAvatars", true),
                 tokenRatio = o.num("tokenRatio", 3.5).coerceIn(1.0, 8.0),
+                regex = o.objList("regex").map { RegexScript.fromJson(it) },
+                characterRegex = o.bool("characterRegex", true),
+                renderHtml = o.bool("renderHtml", true),
+                allowHtmlScripts = o.bool("allowHtmlScripts", false),
             )
         }
+    }
+}
+
+// ---------------------------------------------------------------- Groups
+
+enum class GroupStrategy(val wire: Int, val label: String, val hint: String) {
+    NATURAL(0, "Natural", "Mentioned characters reply; otherwise chosen by talkativeness"),
+    LIST(1, "List", "Every active member replies in order"),
+    MANUAL(2, "Manual", "Only the character you tap replies");
+
+    companion object {
+        fun fromWire(i: Int) = entries.firstOrNull { it.wire == i } ?: NATURAL
+    }
+}
+
+/** A group chat. Stored close to SillyTavern's group JSON, with member character ids. */
+data class Group(
+    val id: String,
+    val name: String,
+    val members: List<String>,
+    val disabled: List<String> = emptyList(),
+    val strategy: GroupStrategy = GroupStrategy.NATURAL,
+    val allowSelfResponses: Boolean = false,
+    /** Put every member's card into the prompt instead of only the speaker's. */
+    val joinCards: Boolean = false,
+    val favorite: Boolean = false,
+    val lastActive: Long = 0L,
+) {
+    val chatKey: String get() = chatKeyFor(id)
+    val active: List<String> get() = members.filter { it !in disabled }
+
+    fun toJson(): MJObj = jsonOf(
+        "id" to id, "name" to name, "members" to members, "disabled_members" to disabled,
+        "activation_strategy" to strategy.wire, "allow_self_responses" to allowSelfResponses,
+        "generation_mode" to if (joinCards) 1 else 0, "fav" to favorite, "lastActive" to lastActive.toString(),
+    )
+
+    companion object {
+        const val PREFIX = "group__"
+        fun chatKeyFor(id: String) = PREFIX + id
+        fun isGroupKey(key: String) = key.startsWith(PREFIX)
+        fun idFromKey(key: String) = key.removePrefix(PREFIX)
+
+        fun fromJson(o: JObj) = Group(
+            id = o.str("id"),
+            name = o.str("name", "Group"),
+            members = o.strList("members"),
+            disabled = o.strList("disabled_members"),
+            strategy = GroupStrategy.fromWire(o.int("activation_strategy", 0)),
+            allowSelfResponses = o.bool("allow_self_responses", false),
+            joinCards = o.int("generation_mode", 0) != 0,
+            favorite = o.bool("fav", false),
+            lastActive = o.str("lastActive", "0").toLongOrNull() ?: 0L,
+        )
     }
 }

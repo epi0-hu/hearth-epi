@@ -191,14 +191,16 @@ class CoreTest {
 
     @Test fun chatPromptOrder() {
         val p = PromptBuilder.build(
-            PromptInput(seraphina, Persona("Ann", "A traveler."), Preset("t", postHistory = "Be vivid."),
+            PromptInput(seraphina, Persona("Ann", "A traveler."), Preset("t").withPrompts(postHistory = "Be vivid."),
                 ApiKind.OPENAI_CHAT, history(4), books = listOfNotNull(seraphina.book)),
         )
         val m = p.messages
         assertEquals(Role.SYSTEM, m[0].role)
         assertTrue(m[0].content.contains("Seraphina's next reply"))
         assertTrue(m.any { it.content.contains("The glade heals.") })
-        assertTrue(m.any { it.content == "Seraphina guards the forest.\nSeraphina's personality: kind\nScenario: Ann is lost." })
+        assertTrue(m.any { it.content == "Seraphina guards the forest." })
+        assertTrue(m.any { it.content == "Seraphina's personality: kind" })
+        assertTrue(m.any { it.content == "Scenario: Ann is lost." })
         assertTrue(m.any { it.content.startsWith("[Example dialogue]") && it.content.contains("I am Seraphina.") })
         assertEquals("Stay in character. Be vivid.", m.last().content)
         // depth 1 injection sits right before the last history message
@@ -208,7 +210,7 @@ class CoreTest {
     }
 
     @Test fun contextTrimming() {
-        val small = Preset("t", contextSize = 800, maxTokens = 300, mainPrompt = "Main.", newChatPrompt = "")
+        val small = Preset("t", contextSize = 800, maxTokens = 300, newChatPrompt = "").withPrompts(main = "Main.")
         val p = PromptBuilder.build(
             PromptInput(seraphina.copy(mesExample = "", depthPrompt = null), Persona("Ann"), small, ApiKind.OPENAI_CHAT,
                 (0 until 200).map { ChatMessage(it % 2 == 0, "x", "message number $it " + "word ".repeat(20)) }),
@@ -402,8 +404,8 @@ class CoreTest {
         assertEquals(0.8, p.temperature, 0.0)
         assertEquals(50, p.topK)
         assertEquals(32000, p.contextSize)
-        assertEquals("MAIN", p.mainPrompt)
-        assertEquals("JB", p.postHistory)
+        assertEquals("MAIN", p.module("main")!!.content)
+        assertEquals("JB", p.module("jailbreak")!!.content)
         assertEquals("PF", p.prefill)
         assertEquals(p, Preset.fromJson(p.toJson()))
     }
@@ -411,5 +413,154 @@ class CoreTest {
     @Test fun settingsRoundTrip() {
         val s = AppSettings(persona = Persona("Zed", "tall"), globalLorebooks = listOf("a"), fontScale = 1.25f)
         assertEquals(s, AppSettings.fromJson(Json.parseObj(Json.stringify(s.toJson()))))
+    }
+
+    // ------------------------------------------------------------ Prompt modules (ST prompt manager)
+    @Test fun stModularPreset() {
+        val o = Json.parseObj("""{
+          "prompts":[
+            {"identifier":"main","name":"Main","role":"system","content":"MAIN {{setvar::mood::grim}}"},
+            {"identifier":"rules","name":"Rules","role":"system","content":"RULES mood={{getvar::mood}}"},
+            {"identifier":"style","name":"Style","role":"user","content":"STYLE"},
+            {"identifier":"deep","name":"Deep","role":"system","content":"DEEP NOTE","injection_position":1,"injection_depth":0},
+            {"identifier":"unused","name":"Unused","content":"NOPE"},
+            {"identifier":"jailbreak","name":"JB","role":"system","content":"JB"},
+            {"identifier":"chatHistory","name":"Chat History","system_prompt":true,"marker":true}
+          ],
+          "prompt_order":[{"character_id":100001,"order":[
+            {"identifier":"main","enabled":true},{"identifier":"rules","enabled":true},
+            {"identifier":"style","enabled":false},{"identifier":"charDescription","enabled":true},
+            {"identifier":"chatHistory","enabled":true},{"identifier":"deep","enabled":true},
+            {"identifier":"jailbreak","enabled":true}]}]}""")
+        val p = Preset.fromSillyTavern("Sola", o)
+        assertEquals(listOf("main", "rules", "style", "charDescription", "chatHistory", "deep", "jailbreak", "unused"),
+            p.modules.map { it.identifier })
+        assertFalse(p.module("style")!!.enabled)
+        assertFalse(p.module("unused")!!.enabled)
+        assertTrue(p.module("deep")!!.inChat)
+
+        val built = PromptBuilder.build(PromptInput(seraphina.copy(depthPrompt = null, postHistoryInstructions = ""),
+            Persona("Ann"), p.copy(newChatPrompt = ""), ApiKind.OPENAI_CHAT, history(2)))
+        val c = built.messages.map { it.content }
+        assertEquals("MAIN", c[0])
+        assertEquals("RULES mood=grim", c[1])
+        assertFalse(c.contains("STYLE"))
+        assertEquals("Seraphina guards the forest.", c[2])
+        assertEquals("message 0 about the glade", c[3])
+        assertEquals("DEEP NOTE", c[5])       // depth 0 = after the last message
+        assertEquals("JB", c.last())
+        assertFalse(c.any { it.contains("NOPE") })
+        assertEquals(p, Preset.fromJson(p.toJson()))
+    }
+
+    @Test fun disabledHistoryAndSquash() {
+        val p = Preset("t", newChatPrompt = "", squashSystem = true).let { pr ->
+            pr.copy(modules = pr.modules.map { if (it.identifier == PromptModule.HISTORY) it.copy(enabled = false) else it })
+        }
+        val built = PromptBuilder.build(PromptInput(seraphina.copy(depthPrompt = null, mesExample = ""), Persona("Ann"), p,
+            ApiKind.OPENAI_CHAT, history(4)))
+        assertEquals(0, built.historyIncluded)
+        assertEquals(1, built.messages.size)
+        assertEquals(Role.SYSTEM, built.messages[0].role)
+    }
+
+    @Test fun legacyPresetMigrates() {
+        val p = Preset.fromJson(Json.parseObj("""{"name":"Old","mainPrompt":"OLD MAIN","postHistory":"OLD JB"}"""))
+        assertEquals("OLD MAIN", p.module("main")!!.content)
+        assertEquals("OLD JB", p.module("jailbreak")!!.content)
+    }
+
+    // ------------------------------------------------------------ Regex scripts
+    private fun script(find: String, replace: String, vararg place: Int, md: Boolean = false, po: Boolean = false,
+                       trim: List<String> = emptyList(), min: Int? = null, max: Int? = null) =
+        RegexScript("id$find", "s", find, replace, trim, place.toList(), markdownOnly = md, promptOnly = po,
+            minDepth = min, maxDepth = max)
+
+    @Test fun regexBasics() {
+        val ex = Macros(mapOf("char" to "Sera", "user" to "Ann"))::expand
+        val s1 = script("/{{char}}/g", "[{{char}}]", RegexPlacement.AI_OUTPUT)
+        assertEquals("[Sera] and {{char}}", RegexEngine.run(s1.copy(substituteMacros = 0), "{{char}} and {{char}}".replaceFirst("{{char}}", "{{char}}"), ex)
+            .let { RegexEngine.run(script("/\\{\\{char\\}\\}/", "[{{char}}]", 2), "{{char}} and {{char}}", ex) })
+        assertEquals("[Sera] and [Sera]", RegexEngine.run(s1, "{{char}} and {{char}}", ex))
+        assertEquals("<b>hi</b> x", RegexEngine.run(script("/\\*\\*(.+?)\\*\\*/", "<b>$1</b>", 2), "**hi** x", ex))
+        assertEquals("A-a", RegexEngine.run(script("/a/", "A", 2), "a-a", ex))
+        assertEquals("A-A", RegexEngine.run(script("/a/gi", "A", 2), "a-A", ex))
+        assertEquals("<x>", RegexEngine.run(script("/<(?<tag>\\w+)>[^]*?<\\/\\k<tag>>/s", "<$<tag>>", 2), "<x>\nbody\n</x>", ex))
+        assertEquals("[hello]", RegexEngine.run(script("/<status>([\\s\\S]*?)<\\/status>/", "[{{match}}]", 2,
+            trim = listOf("<status>", "</status>")), "<status>hello</status>", ex))
+        // Sera's name substituted into the pattern itself
+        assertEquals("X said", RegexEngine.run(script("/{{char}}/", "X", 2).copy(substituteMacros = 1), "Sera said", ex))
+        assertEquals("X said", RegexEngine.run(script("/{{char}}/", "X", 2).copy(substituteMacros = 2), "Sera said", ex))
+        // invalid pattern leaves text untouched
+        assertEquals("abc", RegexEngine.run(script("/(/", "X", 2), "abc", ex))
+    }
+
+    @Test fun regexTargetsAndDepth() {
+        val scripts = listOf(
+            script("/a/g", "STORE", RegexPlacement.AI_OUTPUT),
+            script("/b/g", "DISP", RegexPlacement.AI_OUTPUT, md = true),
+            script("/c/g", "PROMPT", RegexPlacement.AI_OUTPUT, po = true),
+            script("/d/g", "USER", RegexPlacement.USER_INPUT),
+            script("/e/g", "OLD", RegexPlacement.AI_OUTPUT, md = true, min = 2),
+        )
+        val t = "abcde"
+        assertEquals("STOREbcde", RegexEngine.apply(scripts, t, RegexPlacement.AI_OUTPUT, RegexTarget.STORE))
+        assertEquals("aDISPcde", RegexEngine.apply(scripts, t, RegexPlacement.AI_OUTPUT, RegexTarget.DISPLAY, 0))
+        assertEquals("aDISPcdOLD", RegexEngine.apply(scripts, t, RegexPlacement.AI_OUTPUT, RegexTarget.DISPLAY, 3))
+        assertEquals("abPROMPTde", RegexEngine.apply(scripts, t, RegexPlacement.AI_OUTPUT, RegexTarget.PROMPT, 0))
+        assertEquals("abcUSERe", RegexEngine.apply(scripts, t, RegexPlacement.USER_INPUT, RegexTarget.STORE))
+
+        // Prompt-only scripts reach the outgoing prompt but not stored text
+        val built = PromptBuilder.build(PromptInput(seraphina.copy(depthPrompt = null), Persona("Ann"), Preset("t"),
+            ApiKind.OPENAI_CHAT, listOf(ChatMessage(false, "Seraphina", "cat")), regex = scripts))
+        assertTrue(built.messages.any { it.content == "PROMPTat" })
+    }
+
+    @Test fun regexImportFormats() {
+        val one = RegexScript.parseAny(Json.parse("""{"id":"x","scriptName":"One","findRegex":"/a/","replaceString":"b","placement":[2],"substituteRegex":true}"""))
+        assertEquals(1, one.size); assertEquals(1, one[0].substituteMacros)
+        val arr = RegexScript.parseAny(Json.parse("""[{"scriptName":"A","findRegex":"/a/"},{"scriptName":"B","findRegex":"/b/"}]"""))
+        assertEquals(listOf("A", "B"), arr.map { it.name })
+        val preset = RegexScript.parseAny(Json.parse("""{"temperature":1,"extensions":{"regex_scripts":[{"scriptName":"P","findRegex":"/p/"}]}}"""))
+        assertEquals("P", preset.single().name)
+        val r = RegexScript.fromJson(Json.parseObj(Json.stringify(one[0].toJson())))
+        assertEquals(one[0], r)
+    }
+
+    @Test fun jsPatternConversion() {
+        assertEquals("\\{\\{char\\}\\}", RegexEngine.jsToJava("{{char}}"))
+        assertEquals("a{2,3}", RegexEngine.jsToJava("a{2,3}"))
+        assertEquals("[\\s\\S]*", RegexEngine.jsToJava("[^]*"))
+        assertEquals("[{}]", RegexEngine.jsToJava("[{}]"))
+    }
+
+    // ------------------------------------------------------------ Groups
+    @Test fun groupPrompt() {
+        val bob = Character("bob", "Bob", description = "A blacksmith.")
+        val sera = seraphina.copy(depthPrompt = null, mesExample = "")
+        val h = listOf(
+            ChatMessage(true, "Ann", "Hello both"),
+            ChatMessage(false, "Seraphina", "Welcome."),
+            ChatMessage(false, "Bob", "Hmph."),
+        )
+        val chat = PromptBuilder.build(PromptInput(bob, Persona("Ann"), Preset("t"), ApiKind.OPENAI_CHAT, h,
+            group = GroupContext(listOf(sera, bob))))
+        val c = chat.messages.map { it.content }
+        assertTrue(c.contains("Ann: Hello both"))
+        assertTrue(c.contains("Seraphina: Welcome."))
+        assertEquals("[Write the next reply only as Bob.]", c.last())
+        assertTrue(c.contains("A blacksmith."))
+        assertFalse(c.any { it.contains("guards the forest") })
+
+        val joined = PromptBuilder.build(PromptInput(bob, Persona("Ann"), Preset("t"), ApiKind.OPENAI_CHAT, h,
+            group = GroupContext(listOf(sera, bob), joinCards = true)))
+        assertTrue(joined.messages.any { it.content.contains("Seraphina: Seraphina guards the forest.") && it.content.contains("Bob: A blacksmith.") })
+
+        val text = PromptBuilder.build(PromptInput(bob, Persona("Ann"), Preset("t", instruct = "ChatML"), ApiKind.TEXT_COMPLETION, h,
+            group = GroupContext(listOf(sera, bob)))).let { it.text!! to it.stop }
+        assertTrue(text.first.endsWith("<|im_start|>assistant\nBob:"))
+        assertTrue(text.second.contains("\nSeraphina:"))
+        assertTrue(text.second.contains("\nAnn:"))
+        assertFalse(text.second.contains("\nBob:"))
     }
 }
