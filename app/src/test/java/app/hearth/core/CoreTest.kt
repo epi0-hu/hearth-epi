@@ -295,31 +295,67 @@ class CoreTest {
         }.exceptionOrNull()?.message == "rate limited")
     }
 
-    @Test fun streamingEndToEnd() {
-        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
-        var seenBody = ""
-        server.createContext("/v1/chat/completions") { ex ->
-            seenBody = ex.requestBody.readBytes().toString(Charsets.UTF_8)
-            ex.responseHeaders.add("Content-Type", "text/event-stream")
-            ex.sendResponseHeaders(200, 0)
-            ex.responseBody.use { os ->
-                for (piece in listOf("Hel", "lo", " wörld")) {
-                    os.write("data: {\"choices\":[{\"delta\":{\"content\":\"$piece\"}}]}\n\n".toByteArray()); os.flush()
+    /** Minimal HTTP/1.1 server on a raw socket (com.sun.net.httpserver isn't visible to Android unit tests). */
+    private class MockServer(val handler: (path: String, body: String, out: java.io.OutputStream) -> Unit) {
+        private val socket = java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+        val port get() = socket.localPort
+        private val thread = Thread {
+            while (!socket.isClosed) {
+                val client = runCatching { socket.accept() }.getOrNull() ?: break
+                client.use { c ->
+                    val input = java.io.BufferedInputStream(c.getInputStream())
+                    fun line(): String {
+                        val sb = StringBuilder()
+                        while (true) {
+                            val b = input.read()
+                            if (b < 0 || b == '\n'.code) break
+                            if (b != '\r'.code) sb.append(b.toChar())
+                        }
+                        return sb.toString()
+                    }
+                    val path = line().split(' ').getOrElse(1) { "/" }.substringBefore('?')
+                    var len = 0
+                    while (true) {
+                        val h = line()
+                        if (h.isEmpty()) break
+                        if (h.startsWith("Content-Length:", true)) len = h.substringAfter(':').trim().toInt()
+                    }
+                    val body = ByteArray(len)
+                    var read = 0
+                    while (read < len) { val r = input.read(body, read, len - read); if (r < 0) break; read += r }
+                    handler(path, String(body, Charsets.UTF_8), c.getOutputStream())
+                    c.getOutputStream().flush()
                 }
-                os.write("data: [DONE]\n\n".toByteArray())
+            }
+        }.apply { isDaemon = true; start() }
+
+        fun stop() = socket.close()
+    }
+
+    private fun respond(out: java.io.OutputStream, code: Int, type: String, body: String) {
+        val b = body.toByteArray()
+        out.write("HTTP/1.1 $code X\r\nContent-Type: $type\r\nContent-Length: ${b.size}\r\nConnection: close\r\n\r\n".toByteArray())
+        out.write(b)
+    }
+
+    @Test fun streamingEndToEnd() {
+        var seenBody = ""
+        val server = MockServer { path, body, out ->
+            when (path) {
+                "/v1/chat/completions" -> {
+                    seenBody = body
+                    out.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n".toByteArray())
+                    for (piece in listOf("Hel", "lo", " wörld")) {
+                        out.write("data: {\"choices\":[{\"delta\":{\"content\":\"$piece\"}}]}\n\n".toByteArray()); out.flush()
+                    }
+                    out.write("data: [DONE]\n\n".toByteArray())
+                }
+                "/v1/models" -> respond(out, 200, "application/json", """{"data":[{"id":"b-model"},{"id":"a-model"}]}""")
+                else -> respond(out, 401, "application/json", """{"error":{"message":"Invalid API key"}}""")
             }
         }
-        server.createContext("/v1/models") { ex ->
-            val b = """{"data":[{"id":"b-model"},{"id":"a-model"}]}""".toByteArray()
-            ex.sendResponseHeaders(200, b.size.toLong()); ex.responseBody.use { it.write(b) }
-        }
-        server.createContext("/bad/chat/completions") { ex ->
-            val b = """{"error":{"message":"Invalid API key"}}""".toByteArray()
-            ex.sendResponseHeaders(401, b.size.toLong()); ex.responseBody.use { it.write(b) }
-        }
-        server.start()
         try {
-            val base = "http://127.0.0.1:${server.address.port}"
+            val base = "http://127.0.0.1:${server.port}"
             val conn = Connection("c", "c", ApiKind.OPENAI_CHAT, "$base/v1", "", "m")
             val prompt = PromptBuilder.build(PromptInput(seraphina, Persona("Ann"), Preset("t"), ApiKind.OPENAI_CHAT, history(2)))
             val deltas = ArrayList<String>()
@@ -332,7 +368,7 @@ class CoreTest {
                 LlmClient.generate(conn.copy(baseUrl = "$base/bad"), Preset("t"), prompt, LlmCall()) { _, _ -> }
             }.exceptionOrNull()
             assertEquals("HTTP 401: Invalid API key", err?.message)
-        } finally { server.stop(0) }
+        } finally { server.stop() }
     }
 
     // ------------------------------------------------------------ Chat files
