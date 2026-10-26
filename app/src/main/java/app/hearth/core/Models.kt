@@ -577,6 +577,9 @@ data class AppSettings(
     val characterRegex: Boolean = true,
     val renderHtml: Boolean = true,
     val allowHtmlScripts: Boolean = false,
+    /** Firelight glow, drifting embers and decorative motion. */
+    val ambientEffects: Boolean = true,
+    val chatSerif: Boolean = true,
 ) {
     val connection: Connection get() = connections.firstOrNull { it.id == activeConnection } ?: connections.first()
     val preset: Preset get() = presets.firstOrNull { it.name == activePreset } ?: presets.first()
@@ -596,6 +599,8 @@ data class AppSettings(
         "characterRegex" to characterRegex,
         "renderHtml" to renderHtml,
         "allowHtmlScripts" to allowHtmlScripts,
+        "ambientEffects" to ambientEffects,
+        "chatSerif" to chatSerif,
     )
 
     companion object {
@@ -618,6 +623,8 @@ data class AppSettings(
                 characterRegex = o.bool("characterRegex", true),
                 renderHtml = o.bool("renderHtml", true),
                 allowHtmlScripts = o.bool("allowHtmlScripts", false),
+                ambientEffects = o.bool("ambientEffects", true),
+                chatSerif = o.bool("chatSerif", true),
             )
         }
     }

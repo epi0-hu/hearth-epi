@@ -26,6 +26,7 @@ data class ChatPalette(
     val codeBg: Color,
     val userBubble: Color,
     val botBubble: Color,
+    val ember: Color = Color(0xFFFF8A3D),
 )
 
 val LocalChatPalette = staticCompositionLocalOf {
@@ -45,9 +46,9 @@ private val DarkScheme = darkColorScheme(
     secondaryContainer = Color(0xFF3B2F27),
     onSecondaryContainer = Color(0xFFF1DFD1),
     tertiary = Color(0xFF9FC8A0),
-    background = Color(0xFF151210),
+    background = Color(0xFF0F0B09),
     onBackground = Color(0xFFEDE0D8),
-    surface = Color(0xFF151210),
+    surface = Color(0xFF14100D),
     onSurface = Color(0xFFEDE0D8),
     surfaceVariant = Color(0xFF2B2420),
     onSurfaceVariant = Color(0xFFCDBDB2),
@@ -84,6 +85,9 @@ private val LightScheme = lightColorScheme(
 
 private val AppTypography = Typography().let { t ->
     t.copy(
+        displaySmall = t.displaySmall.copy(fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold),
+        headlineMedium = t.headlineMedium.copy(fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold),
+        headlineSmall = t.headlineSmall.copy(fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold),
         titleLarge = t.titleLarge.copy(fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold),
         titleMedium = t.titleMedium.copy(fontWeight = FontWeight.SemiBold),
         bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 23.sp),
@@ -98,11 +102,13 @@ fun HearthTheme(fontScale: Float, content: @Composable () -> Unit) {
         ChatPalette(
             quote = Color(0xFFF2C58F), action = Color(0xFFB8A99F), code = Color(0xFFE6D5C8),
             codeBg = Color(0xFF2A2420), userBubble = Color(0xFF2E2622), botBubble = Color.Transparent,
+            ember = Color(0xFFFF8A3D),
         )
     } else {
         ChatPalette(
             quote = Color(0xFF9A4A12), action = Color(0xFF6B5D55), code = Color(0xFF3A2C24),
             codeBg = Color(0xFFF0E4DC), userBubble = Color(0xFFF3E4DA), botBubble = Color.Transparent,
+            ember = Color(0xFFE0651E),
         )
     }
     val density = LocalDensity.current
@@ -113,3 +119,10 @@ fun HearthTheme(fontScale: Float, content: @Composable () -> Unit) {
         MaterialTheme(colorScheme = scheme, typography = AppTypography, content = content)
     }
 }
+
+/** Text style for chat prose: a reading serif with generous line height. */
+fun proseStyle(serif: Boolean): TextStyle = TextStyle(
+    fontFamily = if (serif) FontFamily.Serif else FontFamily.Default,
+    fontSize = 17.sp,
+    lineHeight = 27.sp,
+)

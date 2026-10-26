@@ -52,7 +52,7 @@ import java.util.Locale
 
 /** Decoded thumbnails, keyed by "<id>@<version>". ~12 MB covers hundreds of 192px avatars. */
 object AvatarCache {
-    val cache = object : LruCache<String, ImageBitmap>(12 * 1024 * 1024) {
+    val cache = object : LruCache<String, ImageBitmap>(24 * 1024 * 1024) {
         override fun sizeOf(key: String, value: ImageBitmap) = value.width * value.height * 4
     }
 }
@@ -219,4 +219,32 @@ fun TextInputDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+/** Rectangular portrait from the cached thumbnail, or a warm gradient with the initial. */
+@Composable
+fun Portrait(id: String, name: String, thumb: File, version: Long, modifier: Modifier = Modifier) {
+    val key = "$id@$version"
+    val bmp by produceState<ImageBitmap?>(initialValue = AvatarCache.cache.get(key), key) {
+        if (value == null && thumb.exists()) {
+            value = withContext(Dispatchers.IO) {
+                runCatching { BitmapFactory.decodeFile(thumb.path)?.asImageBitmap() }.getOrNull()
+            }?.also { AvatarCache.cache.put(key, it) }
+        }
+    }
+    val b = bmp
+    if (b != null) {
+        Image(b, contentDescription = null, contentScale = ContentScale.Crop, alignment = Alignment.TopCenter, modifier = modifier)
+    } else {
+        val base = colorFor(name)
+        Box(
+            modifier.background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(base, base.copy(alpha = 0.55f), Color(0xFF120D0A)))),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                name.trim().take(1).uppercase(Locale.ROOT), color = Color.White.copy(alpha = 0.9f),
+                style = MaterialTheme.typography.displaySmall,
+            )
+        }
+    }
 }

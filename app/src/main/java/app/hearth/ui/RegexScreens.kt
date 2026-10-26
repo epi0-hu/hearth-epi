@@ -50,6 +50,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -86,8 +87,10 @@ fun RegexListScreen(vm: MainViewModel) {
     val charScripts = vm.chat?.members.orEmpty().flatMap { m -> m.regex.map { m.name to it } }
 
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
+                colors = hearthBarColors(),
                 navigationIcon = { IconButton(onClick = { vm.back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 title = { Text("Regex scripts") },
                 actions = {
@@ -180,8 +183,10 @@ fun RegexEditScreen(vm: MainViewModel, id: String?) {
     }
 
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
+                colors = hearthBarColors(),
                 navigationIcon = { IconButton(onClick = { vm.back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 title = { Text(if (existing == null) "New regex" else "Edit regex") },
                 actions = { IconButton(onClick = { save() }) { Icon(Icons.Default.Check, "Save") } },

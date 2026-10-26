@@ -45,6 +45,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -65,13 +66,15 @@ fun SettingsScreen(vm: MainViewModel) {
     val s by vm.settings
     var tab by rememberSaveable { mutableStateOf(0) }
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
             Column {
                 TopAppBar(
+                    colors = hearthBarColors(),
                     navigationIcon = { IconButton(onClick = { vm.back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                     title = { Text("Settings") },
                 )
-                ScrollableTabRow(selectedTabIndex = tab, edgePadding = 8.dp) {
+                ScrollableTabRow(selectedTabIndex = tab, edgePadding = 8.dp, containerColor = Color.Transparent) {
                     TABS.forEachIndexed { i, t -> Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) }) }
                 }
             }
@@ -338,6 +341,10 @@ private fun DisplayTab(vm: MainViewModel, s: AppSettings) {
     SliderRow("Text size", s.fontScale, 0.8f..1.4f, { "${(it * 100).toInt()}%" },
         { v -> vm.updateSettings { it.copy(fontScale = v) } }, step = 0.05f)
     SwitchRow("Show avatars in chat", s.showAvatars, { v -> vm.updateSettings { it.copy(showAvatars = v) } })
+    SwitchRow("Serif chat text", s.chatSerif, { v -> vm.updateSettings { it.copy(chatSerif = v) } },
+        hint = "Book-like reading font for messages")
+    SwitchRow("Living hearth", s.ambientEffects, { v -> vm.updateSettings { it.copy(ambientEffects = v) } },
+        hint = "Firelight glow, drifting embers and motion. Turn off to save battery.")
     SectionTitle("HTML")
     SwitchRow("Render HTML in messages", s.renderHtml, { v -> vm.updateSettings { it.copy(renderHtml = v) } },
         hint = "Status panels, styled boxes, <details>, tables and images. Plain messages stay on the fast renderer.")

@@ -226,6 +226,6 @@ class Storage(val root: File) {
     }
 
     companion object {
-        const val THUMB = 192
+        const val THUMB = 320
     }
 }
