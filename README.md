@@ -42,26 +42,6 @@ A fast, native Android LLM Frontend
   pass with no regex, cheap enough to run every frame.
 - Chats are saved with debounced, atomic writes.
 
-## Getting the APK (no computer needed)
-
-1. Create a new GitHub repository and upload the contents of this folder
-   (keep the folder structure, including `.github/`).
-2. GitHub Actions builds automatically. When the "Build APK" run finishes, open the
-   repository's **Releases** → **latest** and download `hearth.apk` on your phone.
-3. Allow installs from your browser when Android asks.
-
-Every push rebuilds and replaces the `latest` release. Builds are signed with the sideload
-key in `keystore/`, so new versions install over old ones.
-
-## Building locally
-
-Requires JDK 17 and the Android SDK.
-
-```
-./gradlew assembleRelease        # app/build/outputs/apk/release/app-release.apk
-./gradlew testReleaseUnitTest    # core engine tests
-```
-
 ## Project layout
 
 ```
