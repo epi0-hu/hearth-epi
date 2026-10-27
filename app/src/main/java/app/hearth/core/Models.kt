@@ -585,6 +585,13 @@ data class AppSettings(
     /** Firelight glow, drifting embers and decorative motion. */
     val ambientEffects: Boolean = true,
     val chatSerif: Boolean = true,
+    /** "owner/repo" whose "latest" release holds new builds; empty = the repo this build came from. */
+    val updateRepo: String = "",
+    /** Only needed when the repo is private. */
+    val githubToken: String = "",
+    val autoCheckUpdates: Boolean = true,
+    /** Follow a reply as it streams in. Off = the view stays where you're reading. */
+    val autoScroll: Boolean = true,
 ) {
     val connection: Connection get() = connections.firstOrNull { it.id == activeConnection } ?: connections.first()
     val preset: Preset get() = presets.firstOrNull { it.name == activePreset } ?: presets.first()
@@ -606,6 +613,10 @@ data class AppSettings(
         "allowHtmlScripts" to allowHtmlScripts,
         "ambientEffects" to ambientEffects,
         "chatSerif" to chatSerif,
+        "updateRepo" to updateRepo,
+        "githubToken" to githubToken,
+        "autoCheckUpdates" to autoCheckUpdates,
+        "autoScroll" to autoScroll,
     )
 
     companion object {
@@ -630,6 +641,10 @@ data class AppSettings(
                 allowHtmlScripts = o.bool("allowHtmlScripts", false),
                 ambientEffects = o.bool("ambientEffects", true),
                 chatSerif = o.bool("chatSerif", true),
+                updateRepo = o.str("updateRepo"),
+                githubToken = o.str("githubToken"),
+                autoCheckUpdates = o.bool("autoCheckUpdates", true),
+                autoScroll = o.bool("autoScroll", true),
             )
         }
     }

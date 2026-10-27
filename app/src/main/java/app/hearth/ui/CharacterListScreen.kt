@@ -96,6 +96,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.hearth.MainViewModel
 import app.hearth.Screen
+import app.hearth.UpdateState
 import app.hearth.core.CharacterSummary
 import app.hearth.core.Group
 import java.util.Calendar
@@ -175,6 +176,10 @@ fun CharacterListScreen(vm: MainViewModel) {
                         onLore = { vm.navigate(Screen.Lorebooks) },
                         onSettings = { vm.navigate(Screen.Settings) },
                     )
+                }
+                val u = vm.update
+                if (u is UpdateState.Available || u is UpdateState.Downloading || u is UpdateState.Ready) {
+                    item(key = "update", span = { GridItemSpan(maxLineSpan) }) { UpdateBanner(vm, u) }
                 }
                 if (recent.isNotEmpty() && q.isEmpty()) {
                     item(key = "continue", span = { GridItemSpan(maxLineSpan) }) {
@@ -468,6 +473,44 @@ fun GroupAvatarIds(vm: MainViewModel, members: List<Pair<String, String>>, size:
     Box(Modifier.width(size + step * (shown.size - 1).coerceAtLeast(0)).height(size)) {
         shown.forEachIndexed { i, (id, name) ->
             Avatar(id, name, vm.storage.thumbFile(id), vm.avatarVersion[id] ?: 0L, size, Modifier.padding(start = step * i))
+        }
+    }
+}
+
+@Composable
+private fun UpdateBanner(vm: MainViewModel, u: UpdateState) {
+    val ember = LocalChatPalette.current.ember
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = ember.copy(alpha = 0.14f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, ember.copy(alpha = 0.45f)),
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))
+            .clickable(enabled = u !is UpdateState.Downloading) { vm.installUpdate() },
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(HearthIcons.Sparkle, null, Modifier.size(18.dp), tint = ember)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        when (u) {
+                            is UpdateState.Downloading -> "Downloading update…"
+                            is UpdateState.Ready -> "Update downloaded"
+                            else -> "A new Hearth build is ready"
+                        },
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        if (u is UpdateState.Downloading) "Keep Hearth open for a moment" else "Tap to install · your chats stay",
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (u is UpdateState.Downloading) {
+                Spacer(Modifier.height(8.dp))
+                if (u.progress >= 0) androidx.compose.material3.LinearProgressIndicator(progress = { u.progress }, modifier = Modifier.fillMaxWidth(), color = ember)
+                else androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = ember)
+            }
         }
     }
 }

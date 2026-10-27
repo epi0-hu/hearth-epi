@@ -27,6 +27,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -50,6 +51,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import app.hearth.MainViewModel
+import app.hearth.UpdateState
 import app.hearth.core.ApiKind
 import app.hearth.core.AppSettings
 import app.hearth.core.Connection
@@ -341,6 +343,8 @@ private fun DisplayTab(vm: MainViewModel, s: AppSettings) {
     SliderRow("Text size", s.fontScale, 0.8f..1.4f, { "${(it * 100).toInt()}%" },
         { v -> vm.updateSettings { it.copy(fontScale = v) } }, step = 0.05f)
     SwitchRow("Show avatars in chat", s.showAvatars, { v -> vm.updateSettings { it.copy(showAvatars = v) } })
+    SwitchRow("Auto-scroll", s.autoScroll, { v -> vm.updateSettings { it.copy(autoScroll = v) } },
+        hint = "Follow replies as they stream in. Off keeps the chat where you're reading.")
     SwitchRow("Serif chat text", s.chatSerif, { v -> vm.updateSettings { it.copy(chatSerif = v) } },
         hint = "Book-like reading font for messages")
     SwitchRow("Living hearth", s.ambientEffects, { v -> vm.updateSettings { it.copy(ambientEffects = v) } },
@@ -375,6 +379,8 @@ private fun DataTab(vm: MainViewModel) {
     }
     val busy = vm.busy
 
+    UpdatesSection(vm)
+
     SectionTitle("Backup")
     Text(
         "Saves characters, chats, groups, lorebooks, presets, regex and settings into one zip.",
@@ -408,6 +414,68 @@ private fun DataTab(vm: MainViewModel) {
             confirm = "Import",
             onDismiss = { confirmRestore = null },
         ) { vm.restoreBackup(uri) }
+    }
+}
+
+@Composable
+private fun UpdatesSection(vm: MainViewModel) {
+    val s by vm.settings
+    var showToken by remember { mutableStateOf(false) }
+    SectionTitle("Updates")
+    Text(
+        "Installed: Hearth ${app.hearth.BuildConfig.VERSION_NAME} · build ${app.hearth.BuildConfig.BUILD_SHA}",
+        style = MaterialTheme.typography.bodyMedium,
+    )
+    Spacer(Modifier.height(8.dp))
+    OutlinedTextField(
+        s.updateRepo, { v -> vm.updateSettings { it.copy(updateRepo = v.trim()) } },
+        label = { Text("GitHub repository (owner/name)") },
+        placeholder = { Text(app.hearth.BuildConfig.UPDATE_REPO.ifBlank { "owner/hearth-epi" }) },
+        supportingText = {
+            Text(if (s.updateRepo.isBlank() && app.hearth.BuildConfig.UPDATE_REPO.isNotBlank())
+                "Empty = the repo this build came from" else "Where the \"latest\" release is published")
+        },
+        singleLine = true, modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        s.githubToken, { v -> vm.updateSettings { it.copy(githubToken = v.trim()) } },
+        label = { Text("GitHub token (only for private repos)") }, singleLine = true,
+        visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = { TextButton(onClick = { showToken = !showToken }) { Text(if (showToken) "Hide" else "Show") } },
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+    )
+    SwitchRow("Check for updates on launch", s.autoCheckUpdates, { v -> vm.updateSettings { it.copy(autoCheckUpdates = v) } })
+    UpdateControls(vm)
+}
+
+/** Status line + the one button that checks, downloads or installs, depending on state. */
+@Composable
+fun UpdateControls(vm: MainViewModel) {
+    val u = vm.update
+    val (status, button) = when (u) {
+        UpdateState.Idle -> "" to "Check for updates"
+        UpdateState.Checking -> "Checking GitHub…" to null
+        UpdateState.UpToDate -> "You're on the latest build." to "Check again"
+        is UpdateState.Available -> "New build ${u.release.sha} is available." to "Download & install"
+        is UpdateState.Downloading -> (if (u.progress >= 0) "Downloading… ${(u.progress * 100).toInt()}%" else "Downloading…") to null
+        is UpdateState.Ready -> "Downloaded build ${u.release.sha}." to "Install"
+        is UpdateState.Failed -> u.message to "Try again"
+    }
+    if (u is UpdateState.Downloading) {
+        if (u.progress >= 0) LinearProgressIndicator(progress = { u.progress }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp))
+        else LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp))
+    }
+    if (status.isNotEmpty()) {
+        Text(
+            status, style = MaterialTheme.typography.bodyMedium,
+            color = if (u is UpdateState.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(vertical = 4.dp),
+        )
+    }
+    if (button != null) {
+        Button(onClick = {
+            if (u is UpdateState.Available || u is UpdateState.Ready) vm.installUpdate() else vm.checkForUpdates(manual = true)
+        }) { Text(button) }
     }
 }
 

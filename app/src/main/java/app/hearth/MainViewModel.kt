@@ -32,6 +32,7 @@ import app.hearth.core.stDate
 import app.hearth.data.Backup
 import app.hearth.data.Storage
 import app.hearth.regex.RegexService
+import app.hearth.update.Updater
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -40,6 +41,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+
+sealed interface UpdateState {
+    data object Idle : UpdateState
+    data object Checking : UpdateState
+    data object UpToDate : UpdateState
+    data class Available(val release: Updater.Release) : UpdateState
+    data class Downloading(val release: Updater.Release, val progress: Float) : UpdateState
+    data class Ready(val release: Updater.Release, val apk: File) : UpdateState
+    data class Failed(val message: String) : UpdateState
+}
 
 sealed interface Screen {
     data object Characters : Screen
@@ -89,6 +100,64 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { reloadAll() }
     }
 
+    // ------------------------------------------------------------ updates
+    var update by mutableStateOf<UpdateState>(UpdateState.Idle)
+        private set
+
+    /** The repo to update from: the one in Settings, or the repo this build was made from. */
+    val updateRepo: String get() = settings.value.updateRepo.ifBlank { BuildConfig.UPDATE_REPO }
+
+    fun checkForUpdates(manual: Boolean) = viewModelScope.launch {
+        val repo = updateRepo
+        if (repo.isBlank()) {
+            if (manual) update = UpdateState.Failed("Set the GitHub repository (owner/name) first")
+            return@launch
+        }
+        if (update is UpdateState.Downloading) return@launch
+        update = UpdateState.Checking
+        val token = settings.value.githubToken
+        val r = withContext(Dispatchers.IO) { runCatching { Updater.latest(repo, token) } }
+        update = r.fold(
+            { rel -> if (Updater.isNewer(rel, BuildConfig.BUILD_SHA)) UpdateState.Available(rel) else UpdateState.UpToDate },
+            { UpdateState.Failed(it.message ?: "Couldn't reach GitHub") },
+        )
+        if (!manual && update !is UpdateState.Available) update = UpdateState.Idle
+        lastUpdateCheck = System.currentTimeMillis()
+    }
+
+    private var lastUpdateCheck = 0L
+
+    /** Downloads (if needed) and opens the installer. */
+    fun installUpdate() = viewModelScope.launch {
+        val ctx = getApplication<Application>()
+        when (val u = update) {
+            is UpdateState.Ready -> {
+                chat?.flushBlocking()
+                if (!Updater.install(ctx, u.apk)) toast("Allow Hearth to install apps, then tap Install again")
+            }
+            is UpdateState.Available -> {
+                val rel = u.release
+                update = UpdateState.Downloading(rel, 0f)
+                val token = settings.value.githubToken
+                val r = withContext(Dispatchers.IO) {
+                    runCatching {
+                        Updater.download(ctx, rel, token) { p ->
+                            viewModelScope.launch(Dispatchers.Main) {
+                                if (update is UpdateState.Downloading) update = UpdateState.Downloading(rel, p)
+                            }
+                        }
+                    }
+                }
+                r.onSuccess { apk ->
+                    update = UpdateState.Ready(rel, apk)
+                    chat?.flushBlocking()
+                    if (!Updater.install(ctx, apk)) toast("Allow Hearth to install apps, then tap Install again")
+                }.onFailure { update = UpdateState.Failed("Download failed: ${it.message}") }
+            }
+            else -> checkForUpdates(manual = true)
+        }
+    }
+
     private suspend fun reloadAll() {
         val loaded = withContext(Dispatchers.IO) {
             val s = storage.loadSettings()
@@ -99,6 +168,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         _settings.value = loaded
         ready.value = true
+        if (loaded.autoCheckUpdates && System.currentTimeMillis() - lastUpdateCheck > 3 * 60 * 60 * 1000L) {
+            checkForUpdates(manual = false)
+        }
     }
 
     fun toast(msg: String) { toasts.tryEmit(msg) }

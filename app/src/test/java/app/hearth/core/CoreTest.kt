@@ -644,4 +644,21 @@ class CoreTest {
         File("/tmp/claude-0/-home-claude/c0c80862-3b2f-5c0c-bdd9-b35bba4bf1ca/scratchpad/sola/prompt_out.txt").writeText(
             built.messages.joinToString("\n\n=====\n") { "[${it.role}]\n${it.content}" })
     }
+
+    @Test fun brokenTagsNeverEatText() {
+        // The exact output from the bug report: "<coral" is missing its ">".
+        val broken = "under his hands.\n\n<coral\"I— you— that's not—\"</coral>\n\nThe words fragment."
+        assertEquals("under his hands.\n\n<coral>\"I— you— that's not—\"</coral>\n\nThe words fragment.", HtmlFormat.repairTags(broken))
+        // Valid tags and tones are left alone.
+        val ok = "<coral:whisper>\"hi\"</coral> <span class=\"x\">a</span> <img src=\"u\">"
+        assertEquals(ok, HtmlFormat.repairTags(ok))
+        assertEquals("<b>*smiles*</b>", HtmlFormat.repairTags("<b*smiles*</b>"))
+        // A stray "<" that isn't a tag is shown as text instead of swallowing what follows.
+        val html = HtmlFormat.formatBody("I <3 you. <b>bold</b>")
+        assertEquals("I &lt;3 you. <b>bold</b>", html)
+        // Even unrepaired garbage keeps its text visible.
+        assertTrue(HtmlFormat.formatBody("<coral\"I— you\"</span>").contains("&lt;coral"))
+        // Comments pass through.
+        assertEquals("<!-- HTML_START -->x", HtmlFormat.formatBody("<!-- HTML_START -->x"))
+    }
 }

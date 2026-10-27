@@ -1,7 +1,16 @@
 package app.hearth.core
 
 object HtmlFormat {
-    private val TAG_SPLIT = Regex("<[^>]*>")
+    /** Only real tags, comments and doctypes; any other "<" is text and gets escaped. */
+    private val TAG_SPLIT = Regex(
+        "<!--[\\s\\S]*?-->|<![^>]*>|</?[A-Za-z][A-Za-z0-9:_.-]*(?:\\s(?:\"[^\"]*\"|'[^']*'|[^'\"<>])*)?/?>",
+    )
+    /** A quote or asterisk right after a tag name ("<coral\"Hi") is never valid HTML: the ">" is missing. */
+    private val BROKEN_OPEN = Regex("<([A-Za-z][\\w:.-]*)[ \\t]*([\"\u201C\u201D*])")
+
+    /** Repairs tags the model left unclosed, e.g. <coral"Hi"</coral> → <coral>"Hi"</coral>. */
+    fun repairTags(text: String): String =
+        if (text.indexOf('<') < 0) text else BROKEN_OPEN.replace(text) { "<" + it.groupValues[1] + ">" + it.groupValues[2] }
     private val RAW_OPEN = Regex("^<(style|script|pre|code|textarea)\\b")
     private val RAW_CLOSE = Regex("^</(style|script|pre|code|textarea)\\b")
 
@@ -36,6 +45,7 @@ object HtmlFormat {
                 val c = t[i]
                 when {
                     c == '\n' -> sb.append("<br>")
+                    c == '<' -> sb.append("&lt;")
                     c == '*' && i + 1 < t.length && t[i + 1] == '*' -> { closeAll(); bold = !bold; openAll(); i += 2; continue }
                     c == '*' -> { closeAll(); italic = !italic; openAll() }
                     c == '"' || c == '\u201C' || c == '\u201D' -> {

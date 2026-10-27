@@ -218,7 +218,8 @@ object PromptBuilder {
         }
         // History text after prompt-only regex; in groups every line is prefixed with its speaker.
         val historyRx = rxAll(history.mapIndexed { i, m ->
-            RegexItem(m.text, if (m.isUser) RegexPlacement.USER_INPUT else RegexPlacement.AI_OUTPUT, history.size - 1 - i)
+            // Unclosed tags the model wrote earlier would otherwise be copied into new replies.
+            RegexItem(HtmlFormat.repairTags(m.text), if (m.isUser) RegexPlacement.USER_INPUT else RegexPlacement.AI_OUTPUT, history.size - 1 - i)
         })
         fun historyText(m: ChatMessage, depth: Int): String {
             val t = historyRx[history.size - 1 - depth]

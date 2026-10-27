@@ -48,7 +48,7 @@ class Backup(private val storage: Storage) {
             zip.putNextEntry(ZipEntry(MARKER))
             zip.write(Json.stringify(jsonOf("app" to "Hearth", "version" to 1, "created" to System.currentTimeMillis())).toByteArray())
             zip.closeEntry()
-            val s = if (includeKeys) settings else settings.copy(connections = settings.connections.map { it.copy(apiKey = "") })
+            val s = if (includeKeys) settings else settings.copy(connections = settings.connections.map { it.copy(apiKey = "") }, githubToken = "")
             zip.putNextEntry(ZipEntry("settings.json"))
             zip.write(Json.stringify(s.toJson(), pretty = true).toByteArray())
             zip.closeEntry()
@@ -89,9 +89,12 @@ class Backup(private val storage: Storage) {
                 val restored = runCatching {
                     AppSettings.fromJson(Json.parseObj(zip.getInputStream(e).bufferedReader().readText()))
                 }.getOrNull() ?: continue
-                val merged = restored.copy(connections = restored.connections.map { c ->
-                    if (c.apiKey.isBlank()) c.copy(apiKey = current.connections.firstOrNull { it.id == c.id }?.apiKey ?: "") else c
-                })
+                val merged = restored.copy(
+                    connections = restored.connections.map { c ->
+                        if (c.apiKey.isBlank()) c.copy(apiKey = current.connections.firstOrNull { it.id == c.id }?.apiKey ?: "") else c
+                    },
+                    githubToken = restored.githubToken.ifBlank { current.githubToken },
+                )
                 storage.saveSettings(merged)
                 n++
                 continue

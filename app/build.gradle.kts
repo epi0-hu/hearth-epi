@@ -6,6 +6,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Filled in by GitHub Actions; local builds get "dev".
+val buildSha: String = System.getenv("GITHUB_SHA")?.take(7) ?: "dev"
+val buildRepo: String = System.getenv("GITHUB_REPOSITORY") ?: ""
+val buildRun: Int = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+
 android {
     namespace = "app.hearth"
     compileSdk = 35
@@ -14,8 +19,10 @@ android {
         applicationId = "app.hearth"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = buildRun
+        versionName = "0.2.$buildRun"
+        buildConfigField("String", "BUILD_SHA", "\"$buildSha\"")
+        buildConfigField("String", "UPDATE_REPO", "\"$buildRepo\"")
     }
 
     signingConfigs {
@@ -48,7 +55,7 @@ android {
 
     buildFeatures {
         compose = true
-        buildConfig = false
+        buildConfig = true
     }
 
     packaging {

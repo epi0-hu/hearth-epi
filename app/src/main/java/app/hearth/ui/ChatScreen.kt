@@ -25,6 +25,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -123,6 +124,7 @@ import app.hearth.StreamState
 import app.hearth.core.Character
 import app.hearth.core.ChatInfo
 import app.hearth.core.ChatMessage
+import app.hearth.core.HtmlFormat
 import app.hearth.core.RegexItem
 import app.hearth.core.RegexEngine
 import kotlinx.coroutines.delay
@@ -232,6 +234,14 @@ fun ChatScreen(vm: MainViewModel) {
                 SheetAction("All chats", Icons.Default.List) { showChats = true },
                 SheetAction("Start a new chat", Icons.Default.Add) { vm.openKey(s.key, forceNew = true) },
                 SheetAction(if (group != null) "Edit group" else "Edit character", Icons.Default.Edit) { openDetails() },
+                SheetAction(
+                    if (settings.autoScroll) "Turn off auto-scroll" else "Turn on auto-scroll",
+                    Icons.Default.KeyboardArrowDown,
+                ) {
+                    val on = !settings.autoScroll
+                    vm.updateSettings { it.copy(autoScroll = on) }
+                    vm.toast(if (on) "Auto-scroll on: the chat follows new replies" else "Auto-scroll off: the chat stays where you're reading")
+                },
                 SheetAction("Regex scripts", HearthIcons.Regex) { vm.navigate(Screen.Regex) },
                 SheetAction("Settings", Icons.Default.Settings) { vm.navigate(Screen.Settings) },
             ),
@@ -328,6 +338,25 @@ private fun MessageList(vm: MainViewModel, s: ChatSession, showAvatars: Boolean,
     // New message: follow it if the user was already at the bottom.
     LaunchedEffect(msgs.size) { if (atBottom && msgs.isNotEmpty()) listState.scrollToItem(0) }
 
+    // Auto-scroll off: the list is bottom-anchored, so a growing reply would push the text up.
+    // Scroll by exactly the growth so what you're reading stays still.
+    val autoScroll = settings.autoScroll
+    LaunchedEffect(listState, autoScroll) {
+        if (autoScroll) return@LaunchedEffect
+        var lastKey: Any? = null
+        var lastSize = 0
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == 0 }?.let { it.key to it.size } }
+            .collect { info ->
+                if (info == null) { lastKey = null; return@collect }
+                val (key, size) = info
+                if (key == lastKey && size > lastSize && s.streaming != null && listState.firstVisibleItemIndex == 0) {
+                    listState.scrollBy((size - lastSize).toFloat())
+                }
+                lastKey = key
+                lastSize = size
+            }
+    }
+
     Box(modifier) {
         LazyColumn(
             state = listState,
@@ -422,7 +451,7 @@ private fun MessageRow(
     var thinkingOpen by remember { mutableStateOf(false) }
     val haptics = LocalHapticFeedback.current
     val speaker = if (m.isUser) null else s.memberFor(m.name)
-    val rawText = stream?.text ?: m.text
+    val rawText = HtmlFormat.repairTags(stream?.text ?: m.text)
     val rawReasoning = stream?.reasoning ?: m.reasoning
 
     // Display regex (and markdown images) apply live, including while a reply streams in.
