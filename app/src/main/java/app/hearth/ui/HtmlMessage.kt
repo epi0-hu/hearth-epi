@@ -229,9 +229,11 @@ private class HtmlView(ctx: Context) : WebView(ctx) {
  * reply streams, new content is pushed into the already-loaded page each frame.
  */
 @Composable
-fun HtmlMessage(body: String, shell: String, final: Boolean, onLongPress: () -> Unit, modifier: Modifier = Modifier) {
-    val cacheKey = if (final) body.hashCode().toString() + ":" + body.length else null
-    var height by remember { mutableStateOf(cacheKey?.let { heightCache.get(it) } ?: 24) }
+fun HtmlMessage(body: String, shell: String, final: Boolean, id: Long, onLongPress: () -> Unit, modifier: Modifier = Modifier) {
+    // A streaming reply keeps its last height too, so scrolling it out of view and back
+    // doesn't collapse it to one line and jump the list while it re-measures.
+    val cacheKey = if (final) body.hashCode().toString() + ":" + body.length else "stream:$id"
+    var height by remember { mutableStateOf(heightCache.get(cacheKey) ?: 24) }
     val view = remember { arrayOfNulls<HtmlView>(1) }
     val longPress by rememberUpdatedState(onLongPress)
     Box(modifier.fillMaxWidth().height(height.dp)) {
@@ -240,7 +242,7 @@ fun HtmlMessage(body: String, shell: String, final: Boolean, onLongPress: () -> 
             onReset = { it.shownBody = null },
             update = { wv ->
                 view[0] = wv
-                wv.onHeight = { h -> if (h > 0) { height = h; if (cacheKey != null) heightCache.put(cacheKey, h) } }
+                wv.onHeight = { h -> if (h > 0) { height = h; heightCache.put(cacheKey, h) } }
                 wv.loadShell(shell)
                 wv.setBody(body, final)
             },
