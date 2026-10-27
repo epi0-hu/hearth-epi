@@ -14,13 +14,13 @@ import app.hearth.core.Group
 import app.hearth.core.GroupContext
 import app.hearth.core.GroupStrategy
 import app.hearth.core.JObj
+import app.hearth.core.Json
+import app.hearth.core.obj
 import app.hearth.core.LlmCall
 import app.hearth.core.LlmClient
 import app.hearth.core.MJObj
-import app.hearth.core.Macros
 import app.hearth.core.PromptBuilder
 import app.hearth.core.PromptInput
-import app.hearth.core.RegexEngine
 import app.hearth.core.RegexPlacement
 import app.hearth.core.RegexTarget
 import app.hearth.core.TokenCounter
@@ -78,6 +78,10 @@ class ChatSession(
     var lastPromptInfo by mutableStateOf("")
         private set
 
+    /** Chat variables ({{setvar}}/{{getvar}}), stored in the chat file like SillyTavern's chat_metadata.variables. */
+    var variables by mutableStateOf(readVariables(header))
+        private set
+
     private val scope get() = vm.viewModelScope
     private var call: LlmCall? = null
     private var queueJob: Job? = null
@@ -90,20 +94,23 @@ class ChatSession(
     fun memberFor(name: String): Character = members.firstOrNull { it.name == name } ?: character
 
     private fun regex() = vm.regexFor(members)
-    private fun macrosFor(c: Character) = Macros(mapOf("user" to vm.settings.value.persona.name, "char" to c.name))
+
+    /** Macro values for regex replacements ({{char}} is the speaker). */
+    fun macroVars(c: Character): Map<String, String> = mapOf("user" to vm.settings.value.persona.name, "char" to c.name)
 
     // ------------------------------------------------------------ user actions
     fun send() {
         if (generating) return
         val raw = draft.trim()
-        if (raw.isNotEmpty()) {
-            val text = RegexEngine.apply(regex(), raw, RegexPlacement.USER_INPUT, RegexTarget.STORE, 0, macrosFor(character)::expand)
+        if (raw.isEmpty()) { triggerReplies(raw); return }
+        draft = ""
+        scope.launch {
+            val text = vm.regexService.apply1(regex(), raw, RegexPlacement.USER_INPUT, RegexTarget.STORE, 0, macroVars(character), variables)
             messages.add(ChatMessage(isUser = true, name = vm.settings.value.persona.name, text = text))
-            draft = ""
             scheduleSave()
             vm.onChatActivity(key)
+            triggerReplies(raw)
         }
-        triggerReplies(raw)
     }
 
     /** Lets the group's strategy (or the single character) answer. */
@@ -186,10 +193,15 @@ class ChatSession(
         if (idx < 0) return
         val m = messages[idx]
         val place = if (m.isUser) RegexPlacement.USER_INPUT else RegexPlacement.AI_OUTPUT
-        val fixed = RegexEngine.apply(regex(), text, place, RegexTarget.STORE, messages.lastIndex - idx,
-            macrosFor(memberFor(m.name))::expand, onlyRunOnEdit = true)
-        messages[idx] = m.withText(fixed)
-        scheduleSave()
+        val depth = messages.lastIndex - idx
+        messages[idx] = m.withText(text)
+        scope.launch {
+            val fixed = vm.regexService.apply1(regex(), text, place, RegexTarget.STORE, depth,
+                macroVars(memberFor(m.name)), variables, isEdit = true)
+            val i = messages.indexOfFirst { it.id == id }
+            if (i >= 0 && fixed != text) messages[i] = messages[i].withText(fixed)
+            scheduleSave()
+        }
     }
 
     fun delete(id: Long) {
@@ -306,11 +318,17 @@ class ChatSession(
                         char = speaker, persona = settings.persona, preset = preset, kind = conn.kind,
                         history = history, books = books, wi = settings.wi, mode = mode,
                         tokens = TokenCounter(settings.tokenRatio), regex = regex, model = conn.model,
+                        regexBatch = vm.regexService.batchFor(regex),
+                        variables = variables,
                         group = g?.let { GroupContext(allMembers, it.joinCards) },
                     ),
                 )
                 stops = prompt.stop
                 withContext(Dispatchers.Main) {
+                    if (prompt.variables != variables) {
+                        variables = prompt.variables
+                        writeVariables(header, prompt.variables)
+                    }
                     lastPromptInfo = "~${prompt.tokenEstimate} tokens · ${prompt.historyIncluded} messages" +
                         if (prompt.activatedLore.isNotEmpty()) " · ${prompt.activatedLore.size} lore" else ""
                 }
@@ -333,13 +351,13 @@ class ChatSession(
         return ok && errorMsg == null && !newCall.cancelled
     }
 
-    private fun finish(mode: GenMode, speaker: Character, targetId: Long, base: String, raw: String, rawReasoning: String): Boolean {
-        val ex = macrosFor(speaker)::expand
+    private suspend fun finish(mode: GenMode, speaker: Character, targetId: Long, base: String, raw: String, rawReasoning: String): Boolean {
+        val mv = macroVars(speaker)
         val scripts = regex()
+        val rs = vm.regexService
         val text = if (mode == GenMode.IMPERSONATE) raw
-        else RegexEngine.apply(scripts, if (mode == GenMode.CONTINUE) base + raw else raw,
-            RegexPlacement.AI_OUTPUT, RegexTarget.STORE, 0, ex)
-        val reasoning = RegexEngine.apply(scripts, rawReasoning, RegexPlacement.REASONING, RegexTarget.STORE, 0, ex)
+        else rs.apply1(scripts, if (mode == GenMode.CONTINUE) base + raw else raw, RegexPlacement.AI_OUTPUT, RegexTarget.STORE, 0, mv, variables)
+        val reasoning = rs.apply1(scripts, rawReasoning, RegexPlacement.REASONING, RegexTarget.STORE, 0, mv, variables)
         val idx = messages.indexOfFirst { it.id == targetId }
         var ok = true
         when (mode) {
@@ -356,7 +374,7 @@ class ChatSession(
                 messages[idx] = messages[idx].withText(text)
             }
             GenMode.IMPERSONATE -> if (text.isNotBlank()) {
-                draft = RegexEngine.apply(scripts, text.trim(), RegexPlacement.USER_INPUT, RegexTarget.STORE, 0, ex)
+                draft = rs.apply1(scripts, text.trim(), RegexPlacement.USER_INPUT, RegexTarget.STORE, 0, mv, variables)
             }
         }
         scheduleSave()
@@ -404,5 +422,16 @@ class ChatSession(
 
     companion object {
         const val IMPERSONATE_ID = -1L
+
+        private fun readVariables(header: JObj): Map<String, String> {
+            val v = header.obj("chat_metadata")?.obj("variables") ?: return emptyMap()
+            return v.mapValues { (_, x) -> when (x) { null -> ""; is String -> x; else -> Json.stringify(x) } }
+        }
+
+        private fun writeVariables(header: MJObj, vars: Map<String, String>) {
+            @Suppress("UNCHECKED_CAST")
+            val meta = (header["chat_metadata"] as? MJObj) ?: MJObj().also { header["chat_metadata"] = it }
+            meta["variables"] = MJObj().apply { putAll(vars) }
+        }
     }
 }

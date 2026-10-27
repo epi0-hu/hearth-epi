@@ -108,7 +108,8 @@ class CoreTest {
         val m = Macros(mapOf("user" to "Ann", "char" to "Bob"), Random(1), { Date(0) })
         assertEquals("Ann meets Bob", m.expand("{{user}} meets {{char}}"))
         assertEquals("Ann meets Bob", m.expand("<USER> meets <BOT>"))
-        assertEquals("ab", m.expand("a {{trim}} b"))
+        assertEquals("a  b", m.expand("a {{trim}} b"))
+        assertEquals("ab", m.expand("a\n\n{{trim}}\nb"))
         assertEquals("x", m.expand("{{// hidden}}x"))
         val r = m.expand("{{random::red::blue}}")
         assertTrue(r == "red" || r == "blue")
@@ -562,5 +563,85 @@ class CoreTest {
         assertTrue(text.second.contains("\nSeraphina:"))
         assertTrue(text.second.contains("\nAnn:"))
         assertFalse(text.second.contains("\nBob:"))
+    }
+
+    // ------------------------------------------------------------ HTML text formatting
+    @Test fun htmlFormatting() {
+        // Model-colored dialogue keeps a span the CSS can let inherit the font color.
+        val colored = HtmlFormat.formatBody("<font color=#f80>\"Hi\"</font> she said")
+        assertEquals("<font color=#f80><span class=\"q\">\"Hi\"</span></font> she said", colored)
+        // Quote spanning a tag closes and reopens around it, so nesting stays valid.
+        val crossing = HtmlFormat.formatBody("\"a <b>b</b> c\"")
+        assertEquals("<span class=\"q\">\"a </span><b><span class=\"q\">b</span></b><span class=\"q\"> c\"</span>", crossing)
+        // Newlines become <br> (like SillyTavern), except inside style/pre.
+        assertEquals("one<br><br>two", HtmlFormat.formatBody("one\n\ntwo"))
+        assertEquals("<style>a{}\nb{}</style>x<br>y", HtmlFormat.formatBody("<style>a{}\nb{}</style>x\ny"))
+        // Attributes are never touched.
+        assertEquals("<div title=\"*x*\">ok</div>", HtmlFormat.formatBody("<div title=\"*x*\">ok</div>"))
+        // Mixed italic + quote nests correctly.
+        assertEquals("<em class=\"act\">a </em><em class=\"act\"><span class=\"q\">\"b\"</span></em><em class=\"act\"></em>",
+            HtmlFormat.formatBody("*a \"b\"*"))
+    }
+
+    // ------------------------------------------------------------ JS → ICU regex translation
+    @Test fun regexJsCompat() {
+        val ex: (String) -> String = { it }
+        // Group names with underscores (rejected by ICU/Java) are renamed transparently.
+        val named = script("/(?<char_name>\\w+) · Wardrobe:\\s*(?<the_layers>.+)/", "[$<char_name>|$<the_layers>]", 2)
+        assertEquals("[Molly|Sweater]", RegexEngine.run(named, "Molly · Wardrobe: Sweater", ex))
+        assertEquals(null, RegexEngine.compileError(named.find))
+        // Back-references to such names.
+        assertEquals("X", RegexEngine.run(script("/(?<q_mark>[\"'])hi\\k<q_mark>/", "X", 2), "\"hi\"", ex))
+        // Unbounded look-behind is bounded instead of failing.
+        assertEquals("Layers: [x]", RegexEngine.run(script("/(?<=Layers:\\s*)x/", "[x]", 2), "Layers: x", ex))
+        // Code point escapes.
+        assertEquals("ok", RegexEngine.run(script("/\\u{1F525}/u", "ok", 2), "\uD83D\uDD25", ex))
+        // A real syntax error is reported, not swallowed.
+        assertTrue(RegexEngine.compileError("/(unclosed/") != null)
+    }
+
+    // ------------------------------------------------------------ Macro engine v2
+    @Test fun scopedAndConditionalMacros() {
+        val vars = HashMap<String, String>()
+        val m = Macros(mapOf("user" to "Ann", "char" to "Bob", "persona" to "tall", "description" to ""), Random(1), { Date(0) }, vars)
+        // Scoped setvar: content is trimmed, nested macros resolved.
+        assertEquals("", m.expand("{{setvar::greet}}\n  Hi {{user}}!\n{{/setvar}}"))
+        assertEquals("Hi Ann!", vars["greet"])
+        // Inline setvar with multi-line value and nested getvar.
+        m.expand("{{setvar::x::line1\n{{getvar::greet}}}}")
+        assertEquals("line1\nHi Ann!", vars["x"])
+        // if / negation / else / nesting / macro conditions.
+        assertEquals("yes", m.expand("{{if {{persona}}}}yes{{/if}}"))
+        assertEquals("", m.expand("{{if {{description}}}}yes{{/if}}"))
+        assertEquals("no", m.expand("{{if {{description}}}}yes{{else}}no{{/if}}"))
+        assertEquals("neg", m.expand("{{if !{{getvar::missing}}}}neg{{/if}}"))
+        assertEquals("ab", m.expand("{{if {{persona}}}}a{{if {{getvar::greet}}}}b{{/if}}{{/if}}"))
+        assertEquals("", m.expand("{{if {{getvar::missing}}}}a{{if 1}}b{{/if}}c{{/if}}"))
+        // Multiple getvars concatenated in a condition (any non-empty → true).
+        assertEquals("on", m.expand("{{if {{getvar::missing}}{{getvar::greet}}}}on{{/if}}"))
+        // Comments, including multi-line, disappear.
+        assertEquals("ab", m.expand("a{{// a comment\nspanning lines}}b"))
+        // Unknown macros stay as-is; chatvar aliases work.
+        assertEquals("{{nope}}", m.expand("{{nope}}"))
+        m.expand("{{setchatvar::c::1}}"); assertEquals("1", m.expand("{{getchatvar::c}}"))
+        // setvar evaluated in order: later getvar sees earlier set within one text.
+        assertEquals("2v=2", m.expand("{{setvar::n::1}}{{incvar::n}}{{trim}}v={{getvar::n}}"))
+    }
+
+    @Test fun solaPresetPrompt() {
+        val f = File("/tmp/claude-0/-home-claude/c0c80862-3b2f-5c0c-bdd9-b35bba4bf1ca/scratchpad/sola/preset.json")
+        if (!f.exists()) return
+        val preset = Preset.fromSillyTavern("Sola", Json.parseObj(f.readText()))
+        val built = PromptBuilder.build(PromptInput(seraphina.copy(depthPrompt = null), Persona("Frank", "A tired programmer."), preset,
+            ApiKind.OPENAI_CHAT, history(4)))
+        val all = built.messages.joinToString("\n") { it.content }
+        // No unresolved block syntax should reach the model.
+        for (bad in listOf("{{if", "{{/if}}", "{{/setvar}}", "{{setvar::", "{{getvar::", "{{trim}}", "{{//")) {
+            assertFalse("leaked $bad", all.contains(bad))
+        }
+        assertTrue(all.contains("A tired programmer."))
+        assertTrue(built.variables.isNotEmpty())
+        File("/tmp/claude-0/-home-claude/c0c80862-3b2f-5c0c-bdd9-b35bba4bf1ca/scratchpad/sola/prompt_out.txt").writeText(
+            built.messages.joinToString("\n\n=====\n") { "[${it.role}]\n${it.content}" })
     }
 }

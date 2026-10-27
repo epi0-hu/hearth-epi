@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import app.hearth.core.HtmlFormat
 import java.util.UUID
 
 /** Detects messages that should be rendered as HTML instead of plain formatted text. */
@@ -40,63 +41,13 @@ object Html {
             "h[1-6]|pre|code|blockquote|a|section|article|small|sup|sub|mark|ruby|rt|q|kbd|figure|figcaption|svg|progress|meter)\\b[^>]*>",
         RegexOption.IGNORE_CASE,
     )
-    private val TAG_SPLIT = Regex("<[^>]*>")
-    private val BLOCK_NL = Regex(
-        "\\n*(</?(?:div|table|thead|tbody|tr|td|th|details|summary|ul|ol|li|section|article|h[1-6]|hr|p|blockquote|figure|style|br)\\b[^>]*>)\\n*",
-        RegexOption.IGNORE_CASE,
-    )
 
     fun has(text: String): Boolean = text.indexOf('<') >= 0 && TAG.containsMatchIn(text)
 
     private fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    /**
-     * Applies the roleplay formatting (*actions*, **bold**, "dialogue") to text between
-     * tags only, so attributes such as style="..." are never touched.
-     */
-    fun formatBody(text: String): String {
-        val src = BLOCK_NL.replace(text) { it.groupValues[1] }
-        val sb = StringBuilder(src.length + 64)
-        var italic = false
-        var bold = false
-        var quote = false
-        var raw = 0 // inside <style>/<script>/<pre>/<code>
-        var last = 0
-        fun formatText(t: String) {
-            if (raw > 0) { sb.append(t); return }
-            var i = 0
-            while (i < t.length) {
-                val c = t[i]
-                when {
-                    c == '*' && i + 1 < t.length && t[i + 1] == '*' -> { sb.append(if (bold) "</strong>" else "<strong>"); bold = !bold; i += 2; continue }
-                    c == '*' -> sb.append(if (italic) "</em>" else "<em class=\"act\">").also { italic = !italic }
-                    c == '"' || c == '\u201C' || c == '\u201D' -> {
-                        if (!quote) { sb.append("<span class=\"q\">").append(c) } else { sb.append(c).append("</span>") }
-                        quote = !quote
-                    }
-                    else -> sb.append(c)
-                }
-                i++
-            }
-        }
-        for (m in TAG_SPLIT.findAll(src)) {
-            formatText(src.substring(last, m.range.first))
-            val tag = m.value
-            val lower = tag.lowercase()
-            if (RAW_OPEN.containsMatchIn(lower)) raw++
-            else if (RAW_CLOSE.containsMatchIn(lower)) raw = (raw - 1).coerceAtLeast(0)
-            sb.append(tag)
-            last = m.range.last + 1
-        }
-        formatText(src.substring(last))
-        if (quote) sb.append("</span>")
-        if (italic) sb.append("</em>")
-        if (bold) sb.append("</strong>")
-        return sb.toString()
-    }
+    fun formatBody(text: String): String = HtmlFormat.formatBody(text)
 
-    private val RAW_OPEN = Regex("^<(style|script|pre|code)\\b")
-    private val RAW_CLOSE = Regex("^</(style|script|pre|code)\\b")
 
     private fun css(c: Color) = String.format("#%06X", c.toArgb() and 0xFFFFFF)
 
@@ -116,7 +67,7 @@ object Html {
      * The page each HTML message lives in. It's loaded once per WebView; message content is
      * then swapped in through hearthSet(), so streaming updates don't reload the page.
      */
-    fun shell(fg: Color, palette: ChatPalette, link: Color, fontPx: Float, allowScripts: Boolean): String {
+    fun shell(fg: Color, palette: ChatPalette, link: Color, fontPx: Float, allowScripts: Boolean, serif: Boolean = false): String {
         val nonce = UUID.randomUUID().toString().replace("-", "")
         val scriptSrc = if (allowScripts) "'nonce-$nonce' 'unsafe-inline' 'unsafe-eval' *" else "'nonce-$nonce'"
         return """<!doctype html><html><head><meta charset="utf-8">
@@ -124,11 +75,12 @@ object Html {
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="default-src * data: blob: 'unsafe-inline'; script-src $scriptSrc">
 <style>
-html,body{margin:0;padding:0;background:transparent;color:${css(fg)};font-family:sans-serif;font-size:${fontPx}px;line-height:1.45;overflow-wrap:anywhere;-webkit-text-size-adjust:none}
-#hearth-root{white-space:pre-wrap;display:flow-root;padding:2px 2px 8px 2px;box-sizing:border-box}
+html,body{margin:0;padding:0;background:transparent;color:${css(fg)};font-family:${if (serif) "serif" else "sans-serif"};font-size:${fontPx}px;line-height:1.55;overflow-wrap:anywhere;-webkit-text-size-adjust:none}
+#hearth-root{display:flow-root;padding:2px 2px 8px 2px;box-sizing:border-box}
 #hearth-root img,#hearth-root table,#hearth-root pre,#hearth-root div,#hearth-root details,#hearth-root section,#hearth-root article{max-width:100%;box-sizing:border-box}
-#hearth-root div,#hearth-root table,#hearth-root details,#hearth-root ul,#hearth-root ol,#hearth-root section,#hearth-root article,#hearth-root figure,#hearth-root blockquote{white-space:normal}
 em.act{color:${css(palette.action)};font-style:italic} span.q{color:${css(palette.quote)}}
+/* Text the model or a regex colored itself keeps its color (same rule as SillyTavern). */
+font[color] em.act,font[color] span.q,font[color] strong,[style*="color"] span.q,[style*="color"] em.act{color:inherit}
 img,video,svg{max-width:100%;height:auto} table{border-collapse:collapse;max-width:100%}
 img.md{display:block;margin:6px 0;border-radius:14px;max-height:70vh;object-fit:contain}
 .hearth-caret{color:${css(palette.ember)}}
@@ -137,27 +89,37 @@ a{color:${css(link)}} summary{cursor:pointer}
 </style></head><body><div id="hearth-root"></div>
 <script nonce="$nonce">(function(){
 var r=document.getElementById('hearth-root'),last=-1,pad=0,queued=false,runScripts=${if (allowScripts) "true" else "false"};
-function visible(el){var cs=getComputedStyle(el);return cs.display!=='none'&&cs.visibility!=='hidden'&&cs.opacity!=='0';}
 function fit(){
   r.style.zoom='';
   var cw=document.documentElement.clientWidth,sw=r.scrollWidth;
   if(sw>cw+1){r.style.zoom=(cw/sw).toFixed(4);}
 }
+// Walks visible elements, clipping each subtree to any ancestor with overflow other than
+// "visible" — collapsed panels (max-height:0; overflow:hidden) then take up no space.
+function walk(el,clip,acc){
+  var kids=el.children;
+  for(var i=0;i<kids.length;i++){
+    var k=kids[i],cs=getComputedStyle(k);
+    if(cs.display==='none'||cs.visibility==='hidden'||parseFloat(cs.opacity)===0||cs.position==='fixed')continue;
+    var b=k.getBoundingClientRect(),t=b.top,bt=b.bottom;
+    if(clip){if(t<clip.t)t=clip.t;if(bt>clip.b)bt=clip.b;}
+    if(b.width>0&&bt>t){if(t<acc.min)acc.min=t;if(bt>acc.max)acc.max=bt;}
+    var c=clip;
+    if(cs.overflowX!=='visible'||cs.overflowY!=='visible'){c={t:t,b:bt};}
+    if(c&&c.b<=c.t)continue;
+    if(k.children.length)walk(k,c,acc);
+  }
+}
 function measure(){
   queued=false;
   fit();
-  var base=r.getBoundingClientRect(),minTop=0,maxBottom=base.height;
-  var all=r.getElementsByTagName('*');
-  for(var i=0;i<all.length;i++){
-    var el=all[i],b=el.getBoundingClientRect();
-    if(b.width===0&&b.height===0)continue;
-    if(!visible(el))continue;
-    var t=b.top-base.top-pad,bt=b.bottom-base.top+6;
-    if(t<minTop)minTop=t;if(bt>maxBottom)maxBottom=bt;
-  }
-  var want=Math.ceil(Math.max(0,-minTop));
+  var base=r.getBoundingClientRect(),top0=base.top+2+pad;
+  var acc={min:top0,max:base.bottom};
+  walk(r,null,acc);
+  // Pop-overs above the first line get room instead of being clipped.
+  var want=Math.ceil(Math.max(0,top0-acc.min));
   if(want!==pad){pad=want;r.style.paddingTop=(2+pad)+'px';queue();return;}
-  var h=Math.ceil(Math.max(maxBottom,r.scrollHeight));
+  var h=Math.ceil(acc.max-base.top+4);
   if(h!==last){last=h;HearthBridge.height(h);}
 }
 function queue(){if(!queued){queued=true;requestAnimationFrame(measure);}}

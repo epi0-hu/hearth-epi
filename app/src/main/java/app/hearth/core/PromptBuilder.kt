@@ -27,6 +27,10 @@ data class PromptInput(
     val regex: List<RegexScript> = emptyList(),
     val group: GroupContext? = null,
     val model: String = "",
+    /** Chat variables ({{setvar}}/{{getvar}}), carried between generations like SillyTavern's chat metadata. */
+    val variables: Map<String, String> = emptyMap(),
+    /** Engine that runs [regex]; defaults to the built-in Kotlin one. */
+    val regexBatch: RegexBatch? = null,
 )
 
 data class BuiltPrompt(
@@ -40,6 +44,8 @@ data class BuiltPrompt(
     val tokenEstimate: Int,
     val historyIncluded: Int,
     val activatedLore: List<String>,
+    /** Chat variables after this prompt's macros ran. */
+    val variables: Map<String, String> = emptyMap(),
 )
 
 /**
@@ -62,15 +68,21 @@ object PromptBuilder {
         val lastUser = inp.history.lastOrNull { it.isUser }?.text ?: ""
         val lastChar = inp.history.lastOrNull { !it.isUser && !it.isSystem }?.text ?: ""
 
+        // Card fields may themselves contain {{char}}/{{user}}; resolve those first, like SillyTavern.
+        val simple = Macros(mapOf("user" to userName, "char" to c.name), inp.random, inp.now)
+        val examplesRaw = simple.expand(c.mesExample)
         val baseVars = mapOf(
             "user" to userName,
             "char" to c.name,
-            "description" to c.description,
-            "personality" to c.personality,
-            "scenario" to c.scenario,
-            "persona" to inp.persona.description,
-            "charprompt" to c.systemPrompt,
-            "charjailbreak" to c.postHistoryInstructions,
+            "description" to simple.expand(c.description),
+            "personality" to simple.expand(c.personality),
+            "scenario" to simple.expand(c.scenario),
+            "persona" to simple.expand(inp.persona.description),
+            "charprompt" to simple.expand(c.systemPrompt),
+            "charjailbreak" to simple.expand(c.postHistoryInstructions),
+            "mesexamples" to examplesRaw.split(START_RX).map { it.trim() }.filter { it.isNotEmpty() }
+                .joinToString("\n") { "<START>\n$it" },
+            "mesexamplesraw" to examplesRaw,
             "model" to inp.model,
             "group" to memberNames,
             "charifnotgroup" to memberNames,
@@ -83,7 +95,7 @@ object PromptBuilder {
             "idle_duration" to "just now",
             "maxprompt" to p.contextSize.toString(),
         )
-        val variables = HashMap<String, String>()
+        val variables = HashMap(inp.variables)
         val macros = Macros(baseVars, inp.random, inp.now, variables)
         val ex: (String) -> String = { macros.expand(it) }
         fun exFor(m: Character): (String) -> String {
@@ -92,9 +104,10 @@ object PromptBuilder {
                 "personality" to m.personality, "scenario" to m.scenario), inp.random, inp.now, variables)
             return { mm.expand(it) }
         }
-        val rx: (String, Int, Int?) -> String = { t, place, depth ->
-            RegexEngine.apply(inp.regex, t, place, RegexTarget.PROMPT, depth, ex)
-        }
+        val batch = inp.regexBatch ?: KotlinRegexBatch(inp.regex)
+        fun rxAll(items: List<RegexItem>): List<String> =
+            if (inp.regex.isEmpty() || items.isEmpty()) items.map { it.text }
+            else batch.run(items, RegexTarget.PROMPT, baseVars, variables.toMap())
 
         // --- Character definitions (one card, or all members when joining cards)
         val cardsInPrompt = if (inp.group?.joinCards == true) members else listOf(c)
@@ -113,11 +126,13 @@ object PromptBuilder {
         val newestFirst = inp.history.asReversed().map { it.text }
         val wiBudget = (p.contextSize * inp.wi.budgetPercent / 100).coerceAtLeast(64)
         val wiRaw = WorldInfoScanner(inp.wi, tc, inp.random).scan(inp.books, newestFirst, wiBudget, ex)
-        val wiFix: (String) -> String = { rx(it, RegexPlacement.WORLD_INFO, null) }
+        val wiFixed = rxAll(
+            (listOf(wiRaw.before, wiRaw.after, wiRaw.examplesBefore, wiRaw.examplesAfter) + wiRaw.depth.map { it.content })
+                .map { RegexItem(it, RegexPlacement.WORLD_INFO, null) },
+        )
         val wi = wiRaw.copy(
-            before = wiFix(wiRaw.before), after = wiFix(wiRaw.after),
-            examplesBefore = wiFix(wiRaw.examplesBefore), examplesAfter = wiFix(wiRaw.examplesAfter),
-            depth = wiRaw.depth.map { it.copy(content = wiFix(it.content)) },
+            before = wiFixed[0], after = wiFixed[1], examplesBefore = wiFixed[2], examplesAfter = wiFixed[3],
+            depth = wiRaw.depth.mapIndexed { i, d -> d.copy(content = wiFixed[4 + i]) },
         )
 
         val examplesText = buildString {
@@ -202,9 +217,11 @@ object PromptBuilder {
             else -> m.name.ifBlank { c.name }
         }
         // History text after prompt-only regex; in groups every line is prefixed with its speaker.
+        val historyRx = rxAll(history.mapIndexed { i, m ->
+            RegexItem(m.text, if (m.isUser) RegexPlacement.USER_INPUT else RegexPlacement.AI_OUTPUT, history.size - 1 - i)
+        })
         fun historyText(m: ChatMessage, depth: Int): String {
-            val place = if (m.isUser) RegexPlacement.USER_INPUT else RegexPlacement.AI_OUTPUT
-            val t = rx(m.text, place, depth)
+            val t = historyRx[history.size - 1 - depth]
             return if (inGroup && !m.isSystem && !(inp.mode == GenMode.CONTINUE && depth == 0)) "${displayName(m)}: $t" else t
         }
 
@@ -296,7 +313,7 @@ object PromptBuilder {
             return BuiltPrompt(
                 messages = emptyList(), text = sb.toString(), stop = stop.toList(),
                 prefill = "", tokenEstimate = used, historyIncluded = kept.size,
-                activatedLore = wi.activatedUids,
+                activatedLore = wi.activatedUids, variables = variables,
             )
         }
 
@@ -328,6 +345,7 @@ object PromptBuilder {
         return BuiltPrompt(
             messages = finalMsgs, text = null, stop = stop, prefill = prefill,
             tokenEstimate = used, historyIncluded = kept.size, activatedLore = wi.activatedUids,
+            variables = variables,
         )
     }
 

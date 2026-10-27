@@ -55,6 +55,8 @@ sealed interface Screen {
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     val storage = Storage(app.filesDir)
+    /** Regex scripts run in real JavaScript (exact SillyTavern behavior), with a Kotlin fallback. */
+    val regexService = app.hearth.regex.RegexService(app)
     private val backup = Backup(storage)
 
     /** Snapshot state (not a Flow) so text fields bound to settings update synchronously. */
@@ -167,7 +169,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         r.onSuccess { (p, regex) ->
             addPresets(listOf(p), activate = true)
-            if (regex.isNotEmpty()) addRegexScripts(regex)
+            // Preset scripts live in the preset; drop copies an older version put in the global list.
+            if (regex.isNotEmpty()) {
+                val ids = regex.map { it.id }.toSet()
+                updateSettings { s -> s.copy(regex = s.regex.filter { it.id !in ids }) }
+            }
             val on = p.modules.count { it.enabled && !it.marker }
             toast("Imported \"${p.name}\" · ${p.modules.size} prompts ($on on)" +
                 if (regex.isNotEmpty()) " · ${regex.size} regex" else "")
@@ -175,9 +181,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ------------------------------------------------------------ regex
+    /** Scripts in the order SillyTavern runs them: global, then the active preset's, then the characters'. */
     fun regexFor(members: List<Character>): List<RegexScript> {
         val s = settings.value
-        return if (s.characterRegex) s.regex + members.flatMap { it.regex } else s.regex
+        val chars = if (s.characterRegex) members.flatMap { it.regex } else emptyList()
+        val key = Triple(s.regex, s.preset.regex, chars)
+        regexCache?.let { if (it.first == key) return it.second }
+        val list = (s.regex + s.preset.regex + chars).distinctBy { it.id }
+        regexCache = key to list
+        return list
+    }
+
+    // Same list instance for unchanged inputs, so the JS engine and display cache can reuse work.
+    private var regexCache: Pair<Triple<List<RegexScript>, List<RegexScript>, List<RegexScript>>, List<RegexScript>>? = null
+
+    fun togglePresetRegex(id: String) = updatePreset { p ->
+        p.copy(regex = p.regex.map { if (it.id == id) it.copy(disabled = !it.disabled) else it })
     }
 
     fun saveRegex(r: RegexScript) = updateSettings { s ->

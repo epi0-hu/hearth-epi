@@ -46,6 +46,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -56,8 +57,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.hearth.MainViewModel
 import app.hearth.Screen
-import app.hearth.core.Macros
-import app.hearth.core.RegexEngine
 import app.hearth.core.RegexPlacement
 import app.hearth.core.RegexScript
 import java.util.UUID
@@ -136,12 +135,39 @@ fun RegexListScreen(vm: MainViewModel) {
                     Column(Modifier.weight(1f)) {
                         Text(r.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(summary(r), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        val err by produceState<String?>(null, r.find) { value = vm.regexService.check(r.find) }
+                        if (err != null) {
+                            Text("⚠ Pattern error: $err", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
                     }
                     IconButton(onClick = { vm.moveRegex(r.id, -1) }, enabled = i > 0, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.Default.KeyboardArrowUp, "Move up")
                     }
                     IconButton(onClick = { vm.moveRegex(r.id, +1) }, enabled = i < s.regex.lastIndex, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.Default.KeyboardArrowDown, "Move down")
+                    }
+                }
+            }
+            val presetScripts = s.preset.regex
+            if (presetScripts.isNotEmpty()) {
+                item(key = "_presetHeader") {
+                    SectionTitle(
+                        "From preset \"${s.preset.name}\" · ${presetScripts.count { !it.disabled }} of ${presetScripts.size} on",
+                        Modifier.padding(horizontal = 16.dp),
+                    )
+                }
+                items(presetScripts, key = { "p:" + it.id }) { r ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 12.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Switch(checked = !r.disabled, onCheckedChange = { vm.togglePresetRegex(r.id) })
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(r.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(summary(r), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             }
@@ -199,10 +225,11 @@ fun RegexEditScreen(vm: MainViewModel, id: String?) {
         ) {
             OutlinedTextField(r.name, { r = r.copy(name = it) }, label = { Text("Name") }, singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-            val compiles = remember(r.find) { r.find.isBlank() || RegexEngine.compile(r.find) != null }
+            val compileErr by produceState<String?>(null, r.find) { value = vm.regexService.check(r.find) }
+            val compiles = compileErr == null
             OutlinedTextField(
                 r.find, { r = r.copy(find = it) }, label = { Text("Find regex, e.g. /pattern/gi") },
-                isError = !compiles, supportingText = { if (!compiles) Text("This pattern doesn't compile") },
+                isError = !compiles, supportingText = { if (!compiles) Text("This pattern doesn't compile: $compileErr") },
                 textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
@@ -252,10 +279,11 @@ fun RegexEditScreen(vm: MainViewModel, id: String?) {
             SectionTitle("Test")
             OutlinedTextField(test, { test = it }, label = { Text("Sample text") }, minLines = 2,
                 modifier = Modifier.fillMaxWidth())
-            val result = remember(test, r, trimText) {
-                val ex = Macros(mapOf("user" to persona, "char" to charName))::expand
-                runCatching { RegexEngine.run(r.copy(trimStrings = trimText.split('\n').filter { it.isNotEmpty() }), test, ex) }
-                    .getOrElse { "Error: ${it.message}" }
+            val result by produceState("", test, r, trimText) {
+                value = if (test.isEmpty()) "" else vm.regexService.test(
+                    r.copy(trimStrings = trimText.split('\n').filter { it.isNotEmpty() }), test,
+                    mapOf("user" to persona, "char" to charName),
+                )
             }
             if (test.isNotEmpty()) {
                 Text("Result", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))

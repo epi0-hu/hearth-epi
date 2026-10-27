@@ -99,9 +99,31 @@ data class RegexScript(
     }
 }
 
-/** Runs regex scripts with JavaScript-style patterns and ST replacement rules. */
+/** One text to run regex scripts on. [depth] is 0 for the newest message, null when not applicable. */
+data class RegexItem(val text: String, val placement: Int, val depth: Int?)
+
+/**
+ * Runs a batch of texts through a fixed list of scripts. The app plugs in a JavaScript
+ * implementation (exact SillyTavern semantics); [KotlinRegexBatch] is the fallback.
+ */
+fun interface RegexBatch {
+    fun run(items: List<RegexItem>, target: RegexTarget, vars: Map<String, String>, variables: Map<String, String>): List<String>
+}
+
+class KotlinRegexBatch(private val scripts: List<RegexScript>) : RegexBatch {
+    override fun run(items: List<RegexItem>, target: RegexTarget, vars: Map<String, String>, variables: Map<String, String>): List<String> {
+        if (scripts.isEmpty()) return items.map { it.text }
+        val ex = Macros(vars, variables = HashMap(variables))::expand
+        return items.map { RegexEngine.apply(scripts, it.text, it.placement, target, it.depth, ex) }
+    }
+}
+
+/** Runs regex scripts with JavaScript-style patterns and ST replacement rules (fallback engine). */
 object RegexEngine {
-    private class Compiled(val regex: Regex, val global: Boolean)
+    private class Compiled(val regex: Regex, val global: Boolean, val names: Map<String, String>)
+
+    /** Last compile error per pattern, for showing in the regex editor. */
+    private val errors = HashMap<String, String>()
 
     private val cache = object : LinkedHashMap<String, Compiled?>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Compiled?>?) = size > 256
@@ -152,7 +174,7 @@ object RegexEngine {
                 val named = ref.groupValues[2]
                 val raw = when {
                     num.isNotEmpty() -> m.groups[num.toInt()]?.value
-                    named.isNotEmpty() -> runCatching { m.groups[named]?.value }.getOrNull()
+                    named.isNotEmpty() -> runCatching { m.groups[c.names[named] ?: named]?.value }.getOrNull()
                     else -> null
                 } ?: ""
                 trim(raw, s.trimStrings, expand)
@@ -181,6 +203,13 @@ object RegexEngine {
     /** Parses "/pattern/flags" (or a bare pattern) into a Kotlin regex. */
     fun compile(src: String): Regex? = compileInternal(src)?.regex
 
+    /** Why a pattern doesn't compile on this device, or null if it does. */
+    fun compileError(src: String): String? {
+        if (src.isBlank()) return null
+        compileInternal(src)
+        return synchronized(cache) { errors[src] }
+    }
+
     private fun compileInternal(src: String): Compiled? = synchronized(cache) {
         if (cache.containsKey(src)) return cache[src]
         val c = runCatching {
@@ -191,44 +220,100 @@ object RegexEngine {
                 if ('m' in flags) add(RegexOption.MULTILINE)
                 if ('s' in flags) add(RegexOption.DOT_MATCHES_ALL)
             }
-            Compiled(Regex(jsToJava(pattern), opts), 'g' in flags)
-        }.getOrNull()
+            val conv = convert(pattern)
+            Compiled(Regex(conv.pattern, opts), 'g' in flags, conv.names)
+        }.onFailure { errors[src] = (it.message ?: it.javaClass.simpleName).lineSequence().first() }.getOrNull()
         cache[src] = c
         c
     }
 
+    fun jsToJava(p: String): String = convert(p).pattern
+
+    internal class Converted(val pattern: String, val names: Map<String, String>)
+
     /**
-     * Converts JavaScript regex syntax Java rejects: literal braces that aren't quantifiers
-     * (e.g. /{{char}}/) and the JS "match anything" class [^].
+     * Translates JavaScript regex syntax into what Java / Android's ICU engine accepts:
+     *  - literal braces that aren't quantifiers (e.g. /{{char}}/), JS's [^] and []
+     *  - group names with characters ICU rejects (e.g. (?<char_name>…)), plus \k<…> and $<…>
+     *  - unbounded quantifiers inside look-behind ((?<=\s*) → bounded)
+     *  - \u{1F600} code point escapes, and ICU set operators (&&, --) inside classes
      */
-    fun jsToJava(p: String): String {
-        val sb = StringBuilder(p.length + 8)
-        var i = 0
+    internal fun convert(p: String): Converted {
+        val sb = StringBuilder(p.length + 16)
+        val names = LinkedHashMap<String, String>()
+        fun safe(n: String): String = names.getOrPut(n) {
+            if (VALID_NAME.matches(n)) n else "hg" + names.size + n.filter { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' }
+        }
+        val stack = ArrayList<Boolean>() // true = look-behind group
+        var lookbehind = 0
         var inClass = false
+        var i = 0
         while (i < p.length) {
             val c = p[i]
-            when {
-                c == '\\' && i + 1 < p.length -> {
-                    sb.append(c).append(p[i + 1]); i += 2; continue
+            if (c == '\\' && i + 1 < p.length) {
+                val n = p[i + 1]
+                if (n == 'k' && !inClass && i + 2 < p.length && p[i + 2] == '<') {
+                    val end = p.indexOf('>', i + 3)
+                    if (end > 0) { sb.append("\\k<").append(safe(p.substring(i + 3, end))).append('>'); i = end + 1; continue }
                 }
-                !inClass && p.startsWith("[^]", i) -> { sb.append("[\\s\\S]"); i += 3; continue }
-                !inClass && c == '[' -> { inClass = true; sb.append(c); if (i + 1 < p.length && p[i + 1] == '^') { sb.append('^'); i++ } }
-                inClass && c == ']' -> { inClass = false; sb.append(c) }
-                inClass && c == '[' -> sb.append("\\[")
-                !inClass && c == '{' -> {
+                if (n == 'u' && i + 2 < p.length && p[i + 2] == '{') {
+                    val end = p.indexOf('}', i + 3)
+                    if (end > 0) { sb.append("\\x{").append(p, i + 3, end).append('}'); i = end + 1; continue }
+                }
+                sb.append(c).append(n); i += 2; continue
+            }
+            if (inClass) {
+                when {
+                    c == ']' -> { inClass = false; sb.append(c) }
+                    c == '[' -> sb.append("\\[")
+                    c == '&' && p.startsWith("&&", i) -> { sb.append("&\\&"); i += 2; continue }
+                    c == '-' && p.startsWith("--", i) -> { sb.append("-\\-"); i += 2; continue }
+                    else -> sb.append(c)
+                }
+                i++; continue
+            }
+            when {
+                p.startsWith("[^]", i) -> { sb.append("[\\s\\S]"); i += 3; continue }
+                p.startsWith("[]", i) -> { sb.append("(?!)"); i += 2; continue }
+                c == '[' -> {
+                    inClass = true; sb.append(c)
+                    if (i + 1 < p.length && p[i + 1] == '^') { sb.append('^'); i++ }
+                }
+                c == '(' -> {
+                    if (p.startsWith("(?<=", i) || p.startsWith("(?<!", i)) {
+                        stack.add(true); lookbehind++; sb.append(p, i, i + 4); i += 4; continue
+                    }
+                    if (p.startsWith("(?<", i)) {
+                        val end = p.indexOf('>', i + 3)
+                        if (end > 0) { stack.add(false); sb.append("(?<").append(safe(p.substring(i + 3, end))).append('>'); i = end + 1; continue }
+                    }
+                    stack.add(false); sb.append(c)
+                }
+                c == ')' -> {
+                    if (stack.isNotEmpty() && stack.removeAt(stack.lastIndex)) lookbehind--
+                    sb.append(c)
+                }
+                lookbehind > 0 && c == '*' -> sb.append("{0,$LB_MAX}")
+                lookbehind > 0 && c == '+' -> sb.append("{1,$LB_MAX}")
+                c == '{' -> {
                     val close = p.indexOf('}', i)
                     val body = if (close > i) p.substring(i + 1, close) else ""
-                    if (close > i && QUANT.matches(body) && i > 0) sb.append(p, i, close + 1).also { i = close }
-                    else sb.append("\\{")
+                    if (close > i && QUANT.matches(body) && i > 0) {
+                        if (lookbehind > 0 && body.endsWith(",")) sb.append('{').append(body).append(LB_MAX).append('}')
+                        else sb.append(p, i, close + 1)
+                        i = close
+                    } else sb.append("\\{")
                 }
-                !inClass && c == '}' -> sb.append("\\}")
+                c == '}' -> sb.append("\\}")
                 else -> sb.append(c)
             }
             i++
         }
-        return sb.toString()
+        return Converted(sb.toString(), names)
     }
 
+    private const val LB_MAX = 255
+    private val VALID_NAME = Regex("[A-Za-z][A-Za-z0-9]*")
     private val REGEX_SPECIAL = Regex("[\\\\^$.|?*+()\\[\\]{}/-]")
     private val SLASH_FORM = Regex("^/([\\s\\S]*)/([a-z]*)$")
     private val QUANT = Regex("\\d+(,\\d*)?")

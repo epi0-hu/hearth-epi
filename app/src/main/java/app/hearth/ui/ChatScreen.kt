@@ -123,8 +123,12 @@ import app.hearth.StreamState
 import app.hearth.core.Character
 import app.hearth.core.ChatInfo
 import app.hearth.core.ChatMessage
-import app.hearth.core.Macros
+import app.hearth.core.RegexItem
 import app.hearth.core.RegexEngine
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberUpdatedState
 import app.hearth.core.RegexPlacement
 import app.hearth.core.RegexScript
 import app.hearth.core.RegexTarget
@@ -316,7 +320,7 @@ private fun MessageList(vm: MainViewModel, s: ChatSession, showAvatars: Boolean,
     val reduced = LocalReducedMotion.current
     val prose = remember(serif) { proseStyle(serif) }
     // Display-only regex scripts, computed once per change rather than per row.
-    val displayScripts = remember(settings.regex, settings.characterRegex, s.members) {
+    val displayScripts = remember(settings.regex, settings.preset.regex, settings.characterRegex, s.members) {
         vm.regexFor(s.members).filter { !it.disabled && it.markdownOnly }
     }
     val needDepth = remember(displayScripts) { RegexEngine.usesDepth(displayScripts) }
@@ -385,6 +389,16 @@ private fun MessageList(vm: MainViewModel, s: ChatSession, showAvatars: Boolean,
     editing?.let { m -> EditDialog(m.text, onDismiss = { editing = null }, onSave = { s.edit(m.id, it) }) }
 }
 
+/** Display-regex results, so scrolling back to a message is instant. */
+private object DisplayCache {
+    private val cache = android.util.LruCache<String, Pair<String, String>>(400)
+    fun get(k: String): Pair<String, String>? = cache.get(k)
+    fun put(k: String, v: Pair<String, String>) { cache.put(k, v) }
+}
+
+private fun displayKey(t: String, r: String, scripts: List<RegexScript>, depth: Int?, vars: Map<String, String>): String =
+    "${t.hashCode()}:${t.length}:${r.hashCode()}:${System.identityHashCode(scripts)}:${depth}:${vars.hashCode()}"
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageRow(
@@ -412,13 +426,40 @@ private fun MessageRow(
     val rawReasoning = stream?.reasoning ?: m.reasoning
 
     // Display regex (and markdown images) apply live, including while a reply streams in.
-    val (text, reasoning) = remember(rawText, rawReasoning, displayScripts, depth) {
-        val ex = Macros(mapOf("user" to userName, "char" to (speaker?.name ?: s.character.name)))::expand
-        val place = if (m.isUser) RegexPlacement.USER_INPUT else RegexPlacement.AI_OUTPUT
-        val t = if (displayScripts.isEmpty()) rawText else RegexEngine.apply(displayScripts, rawText, place, RegexTarget.DISPLAY, depth, ex)
-        val r = if (displayScripts.isEmpty()) rawReasoning
-        else RegexEngine.apply(displayScripts, rawReasoning, RegexPlacement.REASONING, RegexTarget.DISPLAY, depth, ex)
-        Html.markdownImages(t) to r
+    val vars = s.variables
+    val charName = speaker?.name ?: s.character.name
+    val latest by rememberUpdatedState(Triple(rawText, rawReasoning, stream != null))
+    // Display regex runs in the JavaScript engine (exact SillyTavern behavior). Results are
+    // cached; while a reply streams, runs are throttled so they never queue up.
+    var processed by remember(m.id, displayScripts, depth, vars) {
+        mutableStateOf(if (displayScripts.isEmpty()) null else DisplayCache.get(displayKey(rawText, rawReasoning, displayScripts, depth, vars)))
+    }
+    if (displayScripts.isNotEmpty()) {
+        LaunchedEffect(m.id, displayScripts, depth, vars, userName, charName) {
+            snapshotFlow { latest }.conflate().collect { (t, r, streaming) ->
+                val k = displayKey(t, r, displayScripts, depth, vars)
+                val res = DisplayCache.get(k) ?: run {
+                    val place = if (m.isUser) RegexPlacement.USER_INPUT else RegexPlacement.AI_OUTPUT
+                    val out = vm.regexService.apply(
+                        displayScripts,
+                        listOf(RegexItem(t, place, depth), RegexItem(r, RegexPlacement.REASONING, depth)),
+                        RegexTarget.DISPLAY, mapOf("user" to userName, "char" to charName), vars,
+                    )
+                    (out[0] to out[1]).also { DisplayCache.put(k, it) }
+                }
+                processed = res
+                if (streaming) delay(90)
+            }
+        }
+    }
+    val (text, reasoning) = remember(processed, rawText, rawReasoning, displayScripts) {
+        val p = processed
+        when {
+            displayScripts.isEmpty() -> Html.markdownImages(rawText) to rawReasoning
+            p != null -> Html.markdownImages(p.first) to p.second
+            stream != null -> Html.markdownImages(rawText) to rawReasoning
+            else -> "" to "" // a few milliseconds until the first result arrives
+        }
     }
     val hasHtml = remember(text) { Html.has(text) }
     val useHtml = renderHtml && hasHtml
@@ -530,7 +571,8 @@ private fun MessageBody(
             val fg = MaterialTheme.colorScheme.onSurface
             val link = MaterialTheme.colorScheme.primary
             val fontPx = prose.fontSize.value * LocalDensity.current.fontScale
-            val shell = remember(fg, palette, link, fontPx, allowScripts) { Html.shell(fg, palette, link, fontPx, allowScripts) }
+            val serif = prose.fontFamily == FontFamily.Serif
+            val shell = remember(fg, palette, link, fontPx, allowScripts, serif) { Html.shell(fg, palette, link, fontPx, allowScripts, serif) }
             val streaming = stream != null
             val body = remember(text, streaming) {
                 Html.formatBody(text) + if (streaming) "<span class=\"hearth-caret\"> ▍</span>" else ""

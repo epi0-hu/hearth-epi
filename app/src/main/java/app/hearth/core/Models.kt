@@ -444,6 +444,8 @@ data class Preset(
     val stopStrings: List<String> = emptyList(),
     val preferCharPrompt: Boolean = true,
     val squashSystem: Boolean = false,
+    /** Regex scripts that belong to this preset (active only while it's selected). */
+    val regex: List<RegexScript> = emptyList(),
 ) {
     fun module(id: String) = modules.firstOrNull { it.identifier == id }
 
@@ -467,6 +469,7 @@ data class Preset(
         "impersonatePrompt" to impersonatePrompt, "groupNudge" to groupNudge, "instruct" to instruct,
         "namesInText" to namesInText, "stopStrings" to stopStrings, "preferCharPrompt" to preferCharPrompt,
         "squashSystem" to squashSystem,
+        "regex" to regex.map { it.toJson() },
     )
 
     companion object {
@@ -498,6 +501,7 @@ data class Preset(
                 stopStrings = o.strList("stopStrings"),
                 preferCharPrompt = o.bool("preferCharPrompt", d.preferCharPrompt),
                 squashSystem = o.bool("squashSystem", d.squashSystem),
+                regex = o.objList("regex").map { RegexScript.fromJson(it) },
             )
         }
 
@@ -526,6 +530,7 @@ data class Preset(
                 impersonatePrompt = o.str("impersonation_prompt", d.impersonatePrompt),
                 groupNudge = o.str("group_nudge_prompt", d.groupNudge),
                 squashSystem = o.bool("squash_system_messages", d.squashSystem),
+                regex = RegexScript.parseAny(o),
             )
         }
     }
