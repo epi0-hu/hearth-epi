@@ -1,6 +1,7 @@
 package app.hearth.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -116,7 +117,11 @@ fun HearthTheme(fontScale: Float, content: @Composable () -> Unit) {
         LocalChatPalette provides palette,
         LocalDensity provides Density(density.density, density.fontScale * fontScale),
     ) {
-        MaterialTheme(colorScheme = scheme, typography = AppTypography, content = content)
+        MaterialTheme(colorScheme = scheme, typography = AppTypography) {
+            // Screens draw over the transparent hearth background, so set the default text/icon color explicitly
+            // (otherwise it falls back to black).
+            CompositionLocalProvider(LocalContentColor provides scheme.onBackground, content = content)
+        }
     }
 }
 

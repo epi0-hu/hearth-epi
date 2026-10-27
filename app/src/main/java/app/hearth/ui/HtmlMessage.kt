@@ -107,17 +107,49 @@ object Html {
 <meta http-equiv="Content-Security-Policy" content="default-src * data: blob: 'unsafe-inline'; script-src $scriptSrc">
 <style>
 html,body{margin:0;padding:0;background:transparent;color:${css(fg)};font-family:sans-serif;font-size:${fontPx}px;line-height:1.45;overflow-wrap:anywhere;-webkit-text-size-adjust:none}
-#hearth-root{white-space:pre-wrap}
+#hearth-root{white-space:pre-wrap;display:flow-root;padding:2px 2px 8px 2px;box-sizing:border-box}
+#hearth-root img,#hearth-root table,#hearth-root pre,#hearth-root div,#hearth-root details,#hearth-root section,#hearth-root article{max-width:100%;box-sizing:border-box}
 #hearth-root div,#hearth-root table,#hearth-root details,#hearth-root ul,#hearth-root ol,#hearth-root section,#hearth-root article,#hearth-root figure,#hearth-root blockquote{white-space:normal}
 em.act{color:${css(palette.action)};font-style:italic} span.q{color:${css(palette.quote)}}
 img,video,svg{max-width:100%;height:auto} table{border-collapse:collapse;max-width:100%}
 pre,code{white-space:pre-wrap;font-family:monospace;background:${css(palette.codeBg)};border-radius:4px}
 a{color:${css(link)}} summary{cursor:pointer}
 </style></head><body><div id="hearth-root">${formatBody(text)}</div>
-<script nonce="$nonce">(function(){var r=document.getElementById('hearth-root');var last=-1;
-function s(){var h=Math.ceil(r.getBoundingClientRect().height);if(h!==last){last=h;HearthBridge.height(h);}}
-if(window.ResizeObserver){new ResizeObserver(s).observe(r);}window.addEventListener('load',s);
-document.addEventListener('toggle',s,true);setTimeout(s,50);setTimeout(s,400);s();})();</script>
+<script nonce="$nonce">(function(){
+var r=document.getElementById('hearth-root'),last=-1,pad=0,queued=false;
+function visible(el){var cs=getComputedStyle(el);return cs.display!=='none'&&cs.visibility!=='hidden'&&cs.opacity!=='0';}
+function fit(){
+  // Panels wider than the screen are scaled down to fit instead of being cut off.
+  r.style.zoom='';
+  var cw=document.documentElement.clientWidth,sw=r.scrollWidth;
+  if(sw>cw+1){r.style.zoom=(cw/sw).toFixed(4);}
+}
+function measure(){
+  queued=false;
+  fit();
+  var base=r.getBoundingClientRect(),minTop=0,maxBottom=base.height;
+  var all=r.getElementsByTagName('*');
+  for(var i=0;i<all.length;i++){
+    var el=all[i],b=el.getBoundingClientRect();
+    if(b.width===0&&b.height===0)continue;
+    if(!visible(el))continue;
+    var t=b.top-base.top-pad,bt=b.bottom-base.top+6;
+    if(t<minTop)minTop=t;if(bt>maxBottom)maxBottom=bt;
+  }
+  // Pop-overs above the first line (tooltips, badges) get room instead of being clipped.
+  var want=Math.ceil(Math.max(0,-minTop));
+  if(want!==pad){pad=want;r.style.paddingTop=(2+pad)+'px';queue();return;}
+  var h=Math.ceil(Math.max(maxBottom,r.scrollHeight));
+  if(h!==last){last=h;HearthBridge.height(h);}
+}
+function queue(){if(!queued){queued=true;requestAnimationFrame(measure);}}
+if(window.ResizeObserver){var ro=new ResizeObserver(queue);ro.observe(r);ro.observe(document.body);}
+if(window.MutationObserver){new MutationObserver(function(recs){for(var i=0;i<recs.length;i++){if(recs[i].target!==r){queue();return;}}}).observe(r,{attributes:true,childList:true,subtree:true,characterData:true});}
+['load','toggle','transitionend','animationend','error'].forEach(function(e){document.addEventListener(e,queue,true);});
+document.addEventListener('click',function(){setTimeout(queue,60);setTimeout(queue,400);},true);
+if(document.fonts&&document.fonts.ready){document.fonts.ready.then(queue);}
+window.addEventListener('load',queue);setTimeout(queue,50);setTimeout(queue,400);setTimeout(queue,1500);measure();
+})();</script>
 </body></html>"""
     }
 
