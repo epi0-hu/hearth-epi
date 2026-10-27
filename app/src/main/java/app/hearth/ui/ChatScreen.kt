@@ -25,7 +25,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -338,25 +337,32 @@ private fun MessageList(vm: MainViewModel, s: ChatSession, showAvatars: Boolean,
     // New message: follow it if the user was already at the bottom.
     LaunchedEffect(msgs.size) { if (atBottom && msgs.isNotEmpty()) listState.scrollToItem(0) }
 
-    // Auto-scroll off: the list is bottom-anchored, so a growing reply would push the text up.
-    // Scroll by exactly the growth so what you're reading stays still.
+    // The list is bottom-anchored, so a growing reply pushes the text above it up. Hold what
+    // you're reading still by scrolling by exactly the growth: always when auto-scroll is off,
+    // and with it on whenever you've scrolled away from the very bottom. dispatchRawDelta
+    // doesn't wait for (or get cancelled by) a drag or fling that's in progress.
     val autoScroll = settings.autoScroll
     LaunchedEffect(listState, autoScroll) {
-        if (autoScroll) return@LaunchedEffect
         var lastKey: Any? = null
         var lastSize = 0
-        snapshotFlow { listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == 0 }?.let { it.key to it.size } }
-            .collect { info ->
-                if (info == null) { lastKey = null; return@collect }
-                val (key, size) = info
-                if (key == lastKey && size > lastSize && s.streaming != null && listState.firstVisibleItemIndex == 0) {
-                    listState.scrollBy((size - lastSize).toFloat())
-                }
-                lastKey = key
-                lastSize = size
+        var lastOffset = 0
+        snapshotFlow {
+            listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == 0 }
+                ?.let { Triple(it.key, it.size, listState.firstVisibleItemScrollOffset) }
+        }.collect { info ->
+            if (info == null) { lastKey = null; return@collect }
+            val (key, size, _) = info
+            val following = autoScroll && lastOffset == 0
+            if (key == lastKey && size > lastSize && s.streaming != null && !following) {
+                listState.dispatchRawDelta((size - lastSize).toFloat())
             }
+            lastKey = key
+            lastSize = size
+            lastOffset = listState.firstVisibleItemScrollOffset
+        }
     }
 
+    val streaming = s.streaming != null
     Box(modifier) {
         LazyColumn(
             state = listState,
@@ -364,12 +370,15 @@ private fun MessageList(vm: MainViewModel, s: ChatSession, showAvatars: Boolean,
             contentPadding = PaddingValues(top = 8.dp, bottom = 12.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            val n = msgs.size
-            items(count = n, key = { msgs[n - 1 - it].id }, contentType = { 0 }) { i ->
-                val m = msgs[n - 1 - i]
+            // A fixed copy: a scroll can measure the list before it recomposes, and indexing the
+            // live list with a stale count then throws once a message is added or removed.
+            val list = msgs.toList()
+            val n = list.size
+            items(count = n, key = { list[n - 1 - it].id }, contentType = { 0 }) { i ->
+                val m = list[n - 1 - i]
                 // derivedStateOf: only the row being streamed recomposes on each frame.
                 val stream by remember(m.id) { derivedStateOf { s.streaming?.takeIf { it.id == m.id } } }
-                val prev = if (n - 2 - i >= 0) msgs[n - 2 - i] else null
+                val prev = if (n - 2 - i >= 0) list[n - 2 - i] else null
                 MessageRow(
                     vm = vm, s = s, m = m, isLast = i == 0, depth = if (needDepth) i else null,
                     sameSpeakerAsPrev = prev != null && prev.isUser == m.isUser && prev.name == m.name,
@@ -377,8 +386,11 @@ private fun MessageList(vm: MainViewModel, s: ChatSession, showAvatars: Boolean,
                     displayScripts = displayScripts, renderHtml = settings.renderHtml,
                     allowScripts = settings.allowHtmlScripts,
                     onActions = { actionsFor = m },
+                    // No placement animation while a reply streams: every token resizes the
+                    // newest row, and animating the rows it moves makes them bounce around.
                     modifier = if (reduced) Modifier else Modifier.animateItem(
-                        fadeInSpec = tween(360), placementSpec = spring(stiffness = Spring.StiffnessMediumLow), fadeOutSpec = tween(200),
+                        fadeInSpec = tween(360), fadeOutSpec = tween(200),
+                        placementSpec = if (streaming) null else spring(stiffness = Spring.StiffnessMediumLow),
                     ),
                 )
             }
@@ -567,7 +579,7 @@ private fun MessageRow(
                 },
                 label = "swipe",
             ) { (_, body) ->
-                MessageBody(body, stream, useHtml && body == text, palette, prose, m.isUser, renderHtml, allowScripts, onActions)
+                MessageBody(body, m.id, stream, useHtml && body == text, palette, prose, m.isUser, renderHtml, allowScripts, onActions)
             }
             if (canSwipe && (m.swipes.size > 1 || stream?.swipeLabel != null || !s.generating)) {
                 SwipeBar(
@@ -584,6 +596,7 @@ private fun MessageRow(
 @Composable
 private fun MessageBody(
     text: String,
+    id: Long,
     stream: StreamState?,
     useHtml: Boolean,
     palette: ChatPalette,
@@ -606,7 +619,7 @@ private fun MessageBody(
             val body = remember(text, streaming) {
                 Html.formatBody(text) + if (streaming) "<span class=\"hearth-caret\"> ▍</span>" else ""
             }
-            HtmlMessage(body, shell, final = !streaming, onLongPress = onActions)
+            HtmlMessage(body, shell, final = !streaming, id = id, onLongPress = onActions)
         }
         else -> {
             val formatted = remember(text, palette, stream != null) {
