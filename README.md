@@ -1,6 +1,8 @@
 # Hearth
 
-A fast, native Android LLM Frontend
+A fast, native Android roleplay chat client compatible with SillyTavern character cards,
+lorebooks, chats and presets. Standalone: no SillyTavern server needed — it talks to
+LLM APIs directly from your phone.
 
 ## Features
 
@@ -41,6 +43,38 @@ A fast, native Android LLM Frontend
 - The message formatter (`*actions*`, `"dialogue"`, `**bold**`, code) is a single linear
   pass with no regex, cheap enough to run every frame.
 - Chats are saved with debounced, atomic writes.
+
+## Getting the APK (no computer needed)
+
+1. Create a new GitHub repository and upload the contents of this folder
+   (keep the folder structure, including `.github/`).
+2. GitHub Actions builds automatically. When the "Build APK" run finishes, open the
+   repository's **Releases** → **latest** and download `hearth.apk` on your phone.
+3. Allow installs from your browser when Android asks.
+
+Every push rebuilds and replaces the `latest` release. Builds are signed with the sideload
+key in `keystore/`, so new versions install over old ones.
+
+## Building locally
+
+Requires JDK 17 and the Android SDK.
+
+```
+./gradlew assembleRelease        # app/build/outputs/apk/release/app-release.apk
+./gradlew testReleaseUnitTest    # core engine tests
+```
+
+## Project layout
+
+```
+app/src/main/java/app/hearth/
+  core/       Pure Kotlin engine (no Android deps): JSON, cards, macros,
+              world info, prompt builder, API client, chat files
+  data/       File storage, thumbnails
+  ui/         Compose screens
+  MainViewModel.kt, ChatSession.kt
+app/src/test/ Unit tests for the core engine
+```
 
 ## Notes
 

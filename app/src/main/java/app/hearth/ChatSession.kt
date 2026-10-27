@@ -222,6 +222,9 @@ class ChatSession(
         if (conn.kind == ApiKind.ANTHROPIC && conn.model.isBlank()) { vm.toast("Pick a model in Settings first"); return }
         generating = true
         stopRequested = false
+        val app = vm.getApplication<android.app.Application>()
+        // Foreground service: keeps the process (and the connection) alive if you switch apps.
+        GenerationService.start(app, if (mode == GenMode.IMPERSONATE) "Writing your reply…" else "${speakers.first().name} is writing…")
         queueJob = scope.launch {
             try {
                 for (sp in speakers) {
@@ -231,6 +234,7 @@ class ChatSession(
             } finally {
                 generating = false
                 streaming = null
+                GenerationService.stop(app)
             }
         }
     }
@@ -356,6 +360,9 @@ class ChatSession(
             }
         }
         scheduleSave()
+        if (ok && !vm.appVisible && mode != GenMode.IMPERSONATE && text.isNotBlank()) {
+            Notifications.replyReady(vm.getApplication<android.app.Application>(), speaker.name, text)
+        }
         return ok
     }
 

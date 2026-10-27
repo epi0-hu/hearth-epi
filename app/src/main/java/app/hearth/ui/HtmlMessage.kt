@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -99,11 +100,28 @@ object Html {
 
     private fun css(c: Color) = String.format("#%06X", c.toArgb() and 0xFFFFFF)
 
-    fun document(text: String, fg: Color, palette: ChatPalette, link: Color, fontPx: Float, allowScripts: Boolean): String {
+    private val MD_IMAGE = Regex("!\\[([^\\]]*)\\]\\(\\s*<?([^)\\s>]+)>?(?:\\s+\"[^\"]*\")?\\s*\\)")
+
+    /** Turns markdown images ![alt](url) into <img> tags so they display. */
+    fun markdownImages(text: String): String {
+        if (text.indexOf("![") < 0) return text
+        return MD_IMAGE.replace(text) { m ->
+            val alt = m.groupValues[1].replace("\"", "&quot;")
+            val url = m.groupValues[2].replace("\"", "%22")
+            "<img class=\"md\" src=\"$url\" alt=\"$alt\" loading=\"eager\">"
+        }
+    }
+
+    /**
+     * The page each HTML message lives in. It's loaded once per WebView; message content is
+     * then swapped in through hearthSet(), so streaming updates don't reload the page.
+     */
+    fun shell(fg: Color, palette: ChatPalette, link: Color, fontPx: Float, allowScripts: Boolean): String {
         val nonce = UUID.randomUUID().toString().replace("-", "")
         val scriptSrc = if (allowScripts) "'nonce-$nonce' 'unsafe-inline' 'unsafe-eval' *" else "'nonce-$nonce'"
         return """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="default-src * data: blob: 'unsafe-inline'; script-src $scriptSrc">
 <style>
 html,body{margin:0;padding:0;background:transparent;color:${css(fg)};font-family:sans-serif;font-size:${fontPx}px;line-height:1.45;overflow-wrap:anywhere;-webkit-text-size-adjust:none}
@@ -112,14 +130,15 @@ html,body{margin:0;padding:0;background:transparent;color:${css(fg)};font-family
 #hearth-root div,#hearth-root table,#hearth-root details,#hearth-root ul,#hearth-root ol,#hearth-root section,#hearth-root article,#hearth-root figure,#hearth-root blockquote{white-space:normal}
 em.act{color:${css(palette.action)};font-style:italic} span.q{color:${css(palette.quote)}}
 img,video,svg{max-width:100%;height:auto} table{border-collapse:collapse;max-width:100%}
+img.md{display:block;margin:6px 0;border-radius:14px;max-height:70vh;object-fit:contain}
+.hearth-caret{color:${css(palette.ember)}}
 pre,code{white-space:pre-wrap;font-family:monospace;background:${css(palette.codeBg)};border-radius:4px}
 a{color:${css(link)}} summary{cursor:pointer}
-</style></head><body><div id="hearth-root">${formatBody(text)}</div>
+</style></head><body><div id="hearth-root"></div>
 <script nonce="$nonce">(function(){
-var r=document.getElementById('hearth-root'),last=-1,pad=0,queued=false;
+var r=document.getElementById('hearth-root'),last=-1,pad=0,queued=false,runScripts=${if (allowScripts) "true" else "false"};
 function visible(el){var cs=getComputedStyle(el);return cs.display!=='none'&&cs.visibility!=='hidden'&&cs.opacity!=='0';}
 function fit(){
-  // Panels wider than the screen are scaled down to fit instead of being cut off.
   r.style.zoom='';
   var cw=document.documentElement.clientWidth,sw=r.scrollWidth;
   if(sw>cw+1){r.style.zoom=(cw/sw).toFixed(4);}
@@ -136,19 +155,28 @@ function measure(){
     var t=b.top-base.top-pad,bt=b.bottom-base.top+6;
     if(t<minTop)minTop=t;if(bt>maxBottom)maxBottom=bt;
   }
-  // Pop-overs above the first line (tooltips, badges) get room instead of being clipped.
   var want=Math.ceil(Math.max(0,-minTop));
   if(want!==pad){pad=want;r.style.paddingTop=(2+pad)+'px';queue();return;}
   var h=Math.ceil(Math.max(maxBottom,r.scrollHeight));
   if(h!==last){last=h;HearthBridge.height(h);}
 }
 function queue(){if(!queued){queued=true;requestAnimationFrame(measure);}}
+window.hearthSet=function(html,fin){
+  r.innerHTML=html;
+  if(fin&&runScripts){
+    var ss=r.querySelectorAll('script');
+    for(var i=0;i<ss.length;i++){var o=ss[i],n=document.createElement('script');
+      for(var j=0;j<o.attributes.length;j++){n.setAttribute(o.attributes[j].name,o.attributes[j].value);}
+      n.text=o.text;o.parentNode.replaceChild(n,o);}
+  }
+  queue();setTimeout(queue,120);
+};
 if(window.ResizeObserver){var ro=new ResizeObserver(queue);ro.observe(r);ro.observe(document.body);}
-if(window.MutationObserver){new MutationObserver(function(recs){for(var i=0;i<recs.length;i++){if(recs[i].target!==r){queue();return;}}}).observe(r,{attributes:true,childList:true,subtree:true,characterData:true});}
+if(window.MutationObserver){new MutationObserver(function(recs){for(var i=0;i<recs.length;i++){if(recs[i].target!==r||recs[i].type==='childList'){queue();return;}}}).observe(r,{attributes:true,childList:true,subtree:true,characterData:true});}
 ['load','toggle','transitionend','animationend','error'].forEach(function(e){document.addEventListener(e,queue,true);});
 document.addEventListener('click',function(){setTimeout(queue,60);setTimeout(queue,400);},true);
 if(document.fonts&&document.fonts.ready){document.fonts.ready.then(queue);}
-window.addEventListener('load',queue);setTimeout(queue,50);setTimeout(queue,400);setTimeout(queue,1500);measure();
+setTimeout(queue,400);setTimeout(queue,1500);
 })();</script>
 </body></html>"""
     }
@@ -164,6 +192,11 @@ private val heightCache = LruCache<String, Int>(512)
 private class HtmlView(ctx: Context) : WebView(ctx) {
     var onHeight: (Int) -> Unit = {}
     private val main = Handler(Looper.getMainLooper())
+    var shellKey: Int? = null
+    private var loaded = false
+    private var pending: Pair<String, Boolean>? = null
+    var shownBody: String? = null
+    var shownFinal = false
 
     inner class Bridge {
         @JavascriptInterface
@@ -189,7 +222,33 @@ private class HtmlView(ctx: Context) : WebView(ctx) {
                 }
                 return true
             }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                loaded = true
+                pending?.let { (b, f) -> pending = null; push(b, f) }
+            }
         }
+    }
+
+    fun loadShell(shell: String) {
+        val k = shell.hashCode()
+        if (shellKey == k) return
+        shellKey = k
+        loaded = false
+        shownBody = null
+        loadDataWithBaseURL("https://hearth.local/", shell, "text/html", "utf-8", null)
+    }
+
+    /** Swaps in new message content without reloading the page. */
+    fun setBody(body: String, final: Boolean) {
+        if (body == shownBody && final == shownFinal) return
+        shownBody = body
+        shownFinal = final
+        if (loaded) push(body, final) else pending = body to final
+    }
+
+    private fun push(body: String, final: Boolean) {
+        evaluateJavascript("window.hearthSet&&window.hearthSet(" + app.hearth.core.Json.stringify(body) + "," + final + ")", null)
     }
 
     /** Forwards a tap from Compose so links and <details> work while scrolling stays with the list. */
@@ -203,34 +262,34 @@ private class HtmlView(ctx: Context) : WebView(ctx) {
 }
 
 /**
- * Renders one message as HTML in a WebView. Only messages that actually contain HTML
- * use this path; everything else stays on the fast native text renderer.
+ * Renders one message as HTML in a WebView. Only messages that actually contain HTML (or
+ * images) use this path; everything else stays on the fast native text renderer. While a
+ * reply streams, new content is pushed into the already-loaded page each frame.
  */
 @Composable
-fun HtmlMessage(document: String, onLongPress: () -> Unit, modifier: Modifier = Modifier) {
-    val key = document.hashCode().toString() + ":" + document.length
-    var height by remember(key) { mutableStateOf(heightCache.get(key) ?: 24) }
+fun HtmlMessage(body: String, shell: String, final: Boolean, onLongPress: () -> Unit, modifier: Modifier = Modifier) {
+    val cacheKey = if (final) body.hashCode().toString() + ":" + body.length else null
+    var height by remember { mutableStateOf(cacheKey?.let { heightCache.get(it) } ?: 24) }
     val view = remember { arrayOfNulls<HtmlView>(1) }
+    val longPress by rememberUpdatedState(onLongPress)
     Box(modifier.fillMaxWidth().height(height.dp)) {
         AndroidView(
             factory = { ctx -> HtmlView(ctx).also { view[0] = it } },
-            onReset = { it.tag = null },
+            onReset = { it.shownBody = null },
             update = { wv ->
                 view[0] = wv
-                wv.onHeight = { h -> if (h > 0) { height = h; heightCache.put(key, h) } }
-                if (wv.tag != key) {
-                    wv.tag = key
-                    wv.loadDataWithBaseURL("https://hearth.local/", document, "text/html", "utf-8", null)
-                }
+                wv.onHeight = { h -> if (h > 0) { height = h; if (cacheKey != null) heightCache.put(cacheKey, h) } }
+                wv.loadShell(shell)
+                wv.setBody(body, final)
             },
             modifier = Modifier.matchParentSize(),
         )
         // Transparent layer: list scrolling keeps working; taps are forwarded to the page.
         Box(
-            Modifier.matchParentSize().pointerInput(key) {
+            Modifier.matchParentSize().pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { o -> view[0]?.tap(o.x, o.y) },
-                    onLongPress = { onLongPress() },
+                    onLongPress = { longPress() },
                 )
             },
         )

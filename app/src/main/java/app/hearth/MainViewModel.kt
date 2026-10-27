@@ -73,6 +73,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var chat by mutableStateOf<ChatSession?>(null)
         private set
 
+    /** Whether the app is on screen (used to decide on "reply ready" notifications). */
+    @Volatile var appVisible = true
+
     /** Bumped when an avatar changes so image caches reload it. */
     val avatarVersion = mutableStateMapOf<String, Long>()
 

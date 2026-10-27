@@ -411,18 +411,17 @@ private fun MessageRow(
     val rawText = stream?.text ?: m.text
     val rawReasoning = stream?.reasoning ?: m.reasoning
 
-    // Display regex runs on finished messages only; streaming text is shown as-is.
-    val (text, reasoning) = remember(rawText, rawReasoning, displayScripts, depth, stream == null) {
-        if (stream != null || displayScripts.isEmpty()) rawText to rawReasoning
-        else {
-            val ex = Macros(mapOf("user" to userName, "char" to (speaker?.name ?: s.character.name)))::expand
-            val place = if (m.isUser) RegexPlacement.USER_INPUT else RegexPlacement.AI_OUTPUT
-            RegexEngine.apply(displayScripts, rawText, place, RegexTarget.DISPLAY, depth, ex) to
-                RegexEngine.apply(displayScripts, rawReasoning, RegexPlacement.REASONING, RegexTarget.DISPLAY, depth, ex)
-        }
+    // Display regex (and markdown images) apply live, including while a reply streams in.
+    val (text, reasoning) = remember(rawText, rawReasoning, displayScripts, depth) {
+        val ex = Macros(mapOf("user" to userName, "char" to (speaker?.name ?: s.character.name)))::expand
+        val place = if (m.isUser) RegexPlacement.USER_INPUT else RegexPlacement.AI_OUTPUT
+        val t = if (displayScripts.isEmpty()) rawText else RegexEngine.apply(displayScripts, rawText, place, RegexTarget.DISPLAY, depth, ex)
+        val r = if (displayScripts.isEmpty()) rawReasoning
+        else RegexEngine.apply(displayScripts, rawReasoning, RegexPlacement.REASONING, RegexTarget.DISPLAY, depth, ex)
+        Html.markdownImages(t) to r
     }
     val hasHtml = remember(text) { Html.has(text) }
-    val useHtml = renderHtml && stream == null && hasHtml
+    val useHtml = renderHtml && hasHtml
     val canSwipe = isLast && !m.isUser && !m.isSystem
     val swipeThreshold = with(LocalDensity.current) { 72.dp.toPx() }
     val ember = palette.ember
@@ -531,10 +530,12 @@ private fun MessageBody(
             val fg = MaterialTheme.colorScheme.onSurface
             val link = MaterialTheme.colorScheme.primary
             val fontPx = prose.fontSize.value * LocalDensity.current.fontScale
-            val doc = remember(text, fg, palette, fontPx, allowScripts) {
-                Html.document(text, fg, palette, link, fontPx, allowScripts)
+            val shell = remember(fg, palette, link, fontPx, allowScripts) { Html.shell(fg, palette, link, fontPx, allowScripts) }
+            val streaming = stream != null
+            val body = remember(text, streaming) {
+                Html.formatBody(text) + if (streaming) "<span class=\"hearth-caret\"> ▍</span>" else ""
             }
-            HtmlMessage(doc, onLongPress = onActions)
+            HtmlMessage(body, shell, final = !streaming, onLongPress = onActions)
         }
         else -> {
             val formatted = remember(text, palette, stream != null) {

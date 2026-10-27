@@ -1,6 +1,10 @@
 package app.hearth
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -23,6 +27,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
@@ -55,6 +60,7 @@ class MainActivity : ComponentActivity() {
                     Box(Modifier.fillMaxSize()) {
                         // One persistent hearth behind every screen; it flares while a reply is being written.
                         val generating = vm.chat?.generating == true
+                        LaunchedEffect(generating) { if (generating) askNotificationsOnce() }
                         HearthBackground(intensity = if (generating) 1f else 0f, animate = !reduced)
                         Box(Modifier.fillMaxSize().graphicsLayer()) { AppRoot(vm, reduced) }
                     }
@@ -63,9 +69,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    override fun onStart() {
+        super.onStart()
+        vm.appVisible = true
+        Notifications.clearReply(this)
+    }
+
     override fun onStop() {
         super.onStop()
+        vm.appVisible = false
         vm.chat?.flush()
+    }
+
+    /** Asked once, the first time a reply is generated (Android 13+). */
+    fun askNotificationsOnce() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        val prefs = getSharedPreferences("hearth", MODE_PRIVATE)
+        if (prefs.getBoolean("askedNotif", false)) return
+        prefs.edit().putBoolean("askedNotif", true).apply()
+        notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
 
