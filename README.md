@@ -1,8 +1,6 @@
 # Hearth
 
-A fast, native Android roleplay chat client compatible with SillyTavern character cards,
-lorebooks, chats and presets. Standalone: no SillyTavern server needed — it talks to
-LLM APIs directly from your phone.
+A fast, native Android LLM Frontend
 
 ## Features
 
