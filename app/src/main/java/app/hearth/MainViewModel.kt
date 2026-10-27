@@ -31,6 +31,7 @@ import app.hearth.core.deepCopy
 import app.hearth.core.stDate
 import app.hearth.data.Backup
 import app.hearth.data.Storage
+import app.hearth.regex.RegexService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -56,7 +57,7 @@ sealed interface Screen {
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     val storage = Storage(app.filesDir)
     /** Regex scripts run in real JavaScript (exact SillyTavern behavior), with a Kotlin fallback. */
-    val regexService = app.hearth.regex.RegexService(app)
+    val regexService = RegexService(app)
     private val backup = Backup(storage)
 
     /** Snapshot state (not a Flow) so text fields bound to settings update synchronously. */

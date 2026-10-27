@@ -440,12 +440,12 @@ private fun MessageRow(
                 val k = displayKey(t, r, displayScripts, depth, vars)
                 val res = DisplayCache.get(k) ?: run {
                     val place = if (m.isUser) RegexPlacement.USER_INPUT else RegexPlacement.AI_OUTPUT
-                    val out = vm.regexService.apply(
+                    val out: List<String> = vm.regexService.apply(
                         displayScripts,
                         listOf(RegexItem(t, place, depth), RegexItem(r, RegexPlacement.REASONING, depth)),
                         RegexTarget.DISPLAY, mapOf("user" to userName, "char" to charName), vars,
                     )
-                    (out[0] to out[1]).also { DisplayCache.put(k, it) }
+                    Pair(out[0], out[1]).also { DisplayCache.put(k, it) }
                 }
                 processed = res
                 if (streaming) delay(90)
