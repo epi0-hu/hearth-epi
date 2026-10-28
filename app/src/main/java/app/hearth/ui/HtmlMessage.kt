@@ -13,6 +13,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -66,8 +67,10 @@ object Html {
     /**
      * The page each HTML message lives in. It's loaded once per WebView; message content is
      * then swapped in through hearthSet(), so streaming updates don't reload the page.
+     * [imageMaxPx] caps markdown images. It can't be in vh: the WebView is sized to its content,
+     * so vh starts out as one line tall and images would shrink to a sliver.
      */
-    fun shell(fg: Color, palette: ChatPalette, link: Color, fontPx: Float, allowScripts: Boolean, serif: Boolean = false): String {
+    fun shell(fg: Color, palette: ChatPalette, link: Color, fontPx: Float, allowScripts: Boolean, serif: Boolean = false, imageMaxPx: Int = 560): String {
         val nonce = UUID.randomUUID().toString().replace("-", "")
         val scriptSrc = if (allowScripts) "'nonce-$nonce' 'unsafe-inline' 'unsafe-eval' *" else "'nonce-$nonce'"
         return """<!doctype html><html><head><meta charset="utf-8">
@@ -82,7 +85,7 @@ em.act{color:${css(palette.action)};font-style:italic} span.q{color:${css(palett
 /* Text the model or a regex colored itself keeps its color (same rule as SillyTavern). */
 font[color] em.act,font[color] span.q,font[color] strong,[style*="color"] span.q,[style*="color"] em.act{color:inherit}
 img,video,svg{max-width:100%;height:auto} table{border-collapse:collapse;max-width:100%}
-img.md{display:block;margin:6px 0;border-radius:14px;max-height:70vh;object-fit:contain}
+img.md{display:block;margin:6px 0;border-radius:14px;max-height:${imageMaxPx}px;object-fit:contain}
 .hearth-caret{color:${css(palette.ember)}}
 pre,code{white-space:pre-wrap;font-family:monospace;background:${css(palette.codeBg)};border-radius:4px}
 a{color:${css(link)}} summary{cursor:pointer}
@@ -172,6 +175,9 @@ private class HtmlView(ctx: Context) : WebView(ctx) {
         settings.allowContentAccess = false
         settings.domStorageEnabled = false
         settings.textZoom = 100
+        // The page has an https base, so http:// images would otherwise be blocked as mixed content.
+        // Compatibility mode lets images and media through but still blocks insecure scripts.
+        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         isVerticalScrollBarEnabled = false
         isHorizontalScrollBarEnabled = false
         overScrollMode = View.OVER_SCROLL_NEVER

@@ -104,6 +104,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
@@ -614,7 +615,10 @@ private fun MessageBody(
             val link = MaterialTheme.colorScheme.primary
             val fontPx = prose.fontSize.value * LocalDensity.current.fontScale
             val serif = prose.fontFamily == FontFamily.Serif
-            val shell = remember(fg, palette, link, fontPx, allowScripts, serif) { Html.shell(fg, palette, link, fontPx, allowScripts, serif) }
+            val imageMaxPx = LocalConfiguration.current.screenHeightDp * 7 / 10
+            val shell = remember(fg, palette, link, fontPx, allowScripts, serif, imageMaxPx) {
+                Html.shell(fg, palette, link, fontPx, allowScripts, serif, imageMaxPx)
+            }
             val streaming = stream != null
             val body = remember(text, streaming) {
                 Html.formatBody(text) + if (streaming) "<span class=\"hearth-caret\"> ▍</span>" else ""
